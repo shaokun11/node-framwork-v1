@@ -220,4 +220,143 @@ docker compose -p hono-api-test -f compose.test.yaml down -v
 
 任何阶段失败都停止后续发布。部署后 smoke 与本地 smoke 分开记录结果，不能用 CI 通过替代线上验证。
 
+
+## 18.9 tsx 安装与实际使用
+
+安装为开发依赖：
+
+```sh
+npm install --save-dev tsx
+```
+
+直接执行：
+
+```sh
+npx tsx src/main.ts
+```
+
+watch 开发：
+
+```sh
+npx tsx watch src/main.ts
+# 或统一通过 package script：
+npm run dev
+```
+
+传应用参数：
+
+```sh
+npm run dev -- --config ./config.local.toml
+```
+
+tsx 使用 Node.js 运行 TypeScript，适合本地快速反馈，但仍需注意：
+
+- 不代替 `npm run typecheck`。
+- 不把 tsx 当生产进程管理器。
+- watch 重启时验证旧进程释放数据库、Redis、Winston 和端口。
+- ESM import 使用项目统一的 `.ts` 相对扩展名。
+- 动态 Worker/new URL 路径单独验证，tsx 不会修复所有构建路径问题。
+- 生产必须运行 `npm run build` 后的 `node dist/main.js`，并执行 Smoke。
+
+## 18.10 Prettier 安装与格式化
+
+安装：
+
+```sh
+npm install --save-dev prettier
+```
+
+`.prettierrc.json` 示例：
+
+```json
+{
+    "printWidth": 100,
+    "tabWidth": 4,
+    "useTabs": false,
+    "semi": true,
+    "singleQuote": false,
+    "trailingComma": "all",
+    "bracketSpacing": true,
+    "endOfLine": "lf"
+}
+```
+
+命令：
+
+```sh
+# 格式化本任务文件
+npx prettier --write src/main.ts docs/api.md
+
+# 全仓检查，不写文件
+npm run format:check
+
+# 全仓格式化后检查 diff
+npm run format
+```
+
+Prettier 只负责格式，不验证 import 是否有效、配置是否正确或测试是否通过。生成代码和迁移按生成器规则处理，不用手工格式化掩盖未重新生成的问题。
+
+## 18.11 ESLint 安装与类型感知规则
+
+安装：
+
+```sh
+npm install --save-dev eslint @eslint/js typescript-eslint eslint-config-prettier
+```
+
+`eslint.config.js` 使用 ESM flat config：
+
+```js
+import js from "@eslint/js";
+import tseslint from "typescript-eslint";
+import prettier from "eslint-config-prettier";
+import { fileURLToPath } from "node:url";
+
+export default tseslint.config(
+    { ignores: ["dist", "coverage", "node_modules"] },
+    js.configs.recommended,
+    ...tseslint.configs.recommendedTypeChecked,
+    {
+        languageOptions: {
+            parserOptions: {
+                projectService: true,
+                tsconfigRootDir: fileURLToPath(new URL(".", import.meta.url)),
+            },
+        },
+        rules: {
+            "@typescript-eslint/no-floating-promises": "error",
+            "@typescript-eslint/no-misused-promises": "error",
+            "@typescript-eslint/no-explicit-any": "error",
+            "@typescript-eslint/consistent-type-imports": "error",
+        },
+    },
+    prettier,
+);
+```
+
+运行：
+
+```sh
+npx eslint src test
+npx eslint . --fix
+```
+
+`--fix` 只自动修复机械问题，执行后仍需 review、typecheck 和测试。类型感知规则需要正确 tsconfig；生成文件、配置文件和测试文件不能被错误排除后又假装已检查。
+
+## 18.12 依赖安装与 lockfile
+
+```sh
+# 新项目按 package.json 安装并更新 lockfile
+npm install
+
+# CI/干净环境严格按 lockfile 安装
+npm ci
+```
+
+- 新依赖明确安装为 dependencies 或 devDependencies。
+- 升级一个技术栈时阅读官方迁移说明，并同步本手册对应示例。
+- 不混用 npm/pnpm/yarn lockfile。
+- 不提交 node_modules、dist、coverage、.env 和 runtime logs。
+- 生产 Docker 使用 npm ci，构建后裁剪开发依赖并运行 Smoke。
+
 上一篇：[Vitest 测试](13-testing.md) | [返回总目录](../development-guide.md) | 下一篇：[裁剪与验收](15-adoption-acceptance.md)

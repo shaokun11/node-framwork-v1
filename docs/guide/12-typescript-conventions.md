@@ -108,4 +108,93 @@ async function run(signal: AbortSignal): Promise<void> {
 - [ ] typecheck、ESLint 类型感知规则和生产 build 全部通过。
 - [ ] dist 入口、Worker、动态 import 和资源路径经过真实启动验证。
 
+
+## 16.7 TypeScript 开发到运行完整流程
+
+安装：
+
+```sh
+npm install --save-dev typescript @types/node tsx
+```
+
+package.json 基线：
+
+```json
+{
+    "name": "order-api",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "tsx watch src/main.ts",
+        "typecheck": "tsc -p tsconfig.json --noEmit",
+        "build": "tsc -p tsconfig.build.json",
+        "start": "node dist/main.js"
+    }
+}
+```
+
+源码 `src/main.ts`：
+
+```ts
+import { Application } from "./bootstrap/application.ts";
+
+const application = await Application.create();
+await application.start();
+```
+
+`src/bootstrap/application.ts`：
+
+```ts
+import { ConfigLoader } from "../config/loader.ts";
+
+export class Application {
+    static async create(): Promise<Application> {
+        const config = await new ConfigLoader().load(/* options */);
+        return new Application(config);
+    }
+
+    private constructor(private readonly config: unknown) {}
+
+    async start(): Promise<void> {
+        // 创建依赖并监听端口。
+    }
+}
+```
+
+开发与发布命令：
+
+```sh
+# 开发：直接执行 TypeScript 并监听重启
+npm run dev
+
+# 静态类型检查，不生成文件
+npm run typecheck
+
+# 生成 dist，并把相对 .ts imports 改写为 .js
+npm run build
+
+# 验证真实生产模块解析
+npm start
+```
+
+如果 build 后仍看到运行时找不到 `.ts`，检查是否遗漏 rewriteRelativeImportExtensions、是否运行了正确 tsconfig、是否把 TS 源码路径写进普通字符串，以及 Docker 是否复制了旧 dist。
+
+## 16.8 tsconfig.build.json 继承方式
+
+```json
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "noEmit": false,
+        "rootDir": "src",
+        "outDir": "dist",
+        "sourceMap": true
+    },
+    "include": ["src"],
+    "exclude": ["src/**/*.test.ts", "test", "dist", "node_modules"]
+}
+```
+
+基础 tsconfig 可设置 noEmit=true 供编辑器/typecheck，build override 为 false。测试和 Vitest 配置使用自己的 include，避免 rootDir 错误和测试代码进入生产 dist。
+
 上一篇：[性能与 Tinypool](11-performance-workers.md) | [返回总目录](../development-guide.md) | 下一篇：[Vitest 测试](13-testing.md)

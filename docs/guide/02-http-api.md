@@ -161,4 +161,289 @@ const orderQuerySchema = z
 - [ ] 写接口的幂等、限流、请求体和超时已定义。
 - [ ] API 文档、契约测试和真实路由保持一致。
 
+
+## 7.11 Hono 安装与最小可运行示例
+
+安装运行依赖：
+
+```sh
+npm install hono @hono/node-server zod @hono/zod-validator
+npm install --save-dev typescript tsx @types/node
+```
+
+最小入口示例：
+
+```ts
+import { serve } from "@hono/node-server";
+import { Hono } from "hono";
+
+const app = new Hono();
+
+app.get("/livez", (c) => c.json({ data: { status: "ok" } }));
+
+const server = serve({
+    fetch: app.fetch,
+    hostname: "127.0.0.1",
+    port: 3000,
+});
+
+process.once("SIGTERM", () => {
+    server.close((error) => {
+        if (error) throw error;
+    });
+});
+```
+
+真实项目不要在模块顶层创建 app 和连接。由 Composition Root 创建 `app`，再把 `app.fetch` 交给 Node adapter；关闭流程见[生命周期专题](09-application-lifecycle.md)。
+
+## 7.12 Hono 路由与 Context 常用 API
+
+```ts
+app.get("/orders/:orderId", async (c) => {
+    const orderId = c.req.param("orderId");
+    const includeItems = c.req.query("includeItems") === "true";
+    const order = await orderService.find({ orderId, includeItems });
+
+    if (!order) {
+        return c.json({ error: "ORDER_NOT_FOUND", message: "订单不存在" }, 404);
+    }
+    return c.json({ data: order });
+});
+
+app.post("/orders", async (c) => {
+    const body = await c.req.json();
+    const order = await orderService.create(body);
+    c.header("Location", `/orders/${order.id}`);
+    return c.json({ data: order }, 201);
+});
+```
+
+常用 Context 能力：
+
+| API | 用途 |
+| --- | --- |
+| c.req.param() | 读取 path 参数，仍需 Zod 验证 |
+| c.req.query() / queries() | 读取单个/多个 query 值 |
+| c.req.header() | 读取请求头 |
+| c.req.json() | 读取 JSON body，处理 malformed JSON |
+| c.req.raw | 访问原始 Fetch Request |
+| c.set() / c.get() | 保存 requestId、principal 等请求上下文 |
+| c.header() | 设置响应头 |
+| c.json() / text() / body() | 返回响应 |
+| c.env.incoming/outgoing | Node adapter 的原始 Node 对象，仅基础设施使用 |
+
+不要在 Service 中传递 Context。Controller 从 Context 取出业务输入后，Service 只接收明确对象。
+
+路由分组：
+
+```ts
+const orders = new Hono();
+orders.get("/:orderId", controller.detail);
+orders.post("/", controller.create);
+app.route("/v1/orders", orders);
+```
+
+模块化注册时应保留 Controller 接收者，使用箭头属性或闭包，避免 `this` 丢失。
+
+## 7.13 Hono 中间件与内置 logger
+
+开发环境可以使用 Hono 内置 logger 快速观察请求：
+
+```ts
+import { logger } from "hono/logger";
+
+app.use("*", logger());
+```
+
+它适合本地调试，不代替项目的结构化日志。生产环境使用 Winston 中间件，统一 requestId、route template、status、duration 和脱敏：
+
+```ts
+app.use("*", async (c, next) => {
+    const startedAt = performance.now();
+    const requestId = c.get("requestId");
+
+    await next();
+
+    httpLogger.info("request completed", {
+        requestId,
+        method: c.req.method,
+        route: c.req.routePath,
+        status: c.res.status,
+        durationMs: Math.round(performance.now() - startedAt),
+    });
+});
+```
+
+错误路径也要记录一次，可通过 try/catch 捕获后交给 `app.onError`，或在最终错误边界统一记录，避免中间件与 onError 重复 error 日志。
+
+中间件必须 `await next()`，否则后续响应、错误和耗时行为不可控。认证中间件通过 `c.set("principal", principal)` 传递身份，Controller 用类型安全的辅助函数读取，不把 principal 写入模块全局变量。
+
+## 7.14 zValidator：把 Zod 接入 Hono
+
+```ts
+import { zValidator } from "@hono/zod-validator";
+import { z } from "zod";
+
+const createOrderSchema = z
+    .object({
+        items: z
+            .array(
+                z.object({
+                    sku: z.string().trim().min(1).max(64),
+                    quantity: z.number().int().positive().max(1000),
+                }),
+            )
+            .min(1)
+            .max(100),
+    })
+    .strict();
+
+app.post(
+    "/orders",
+    zValidator("json", createOrderSchema, (result, c) => {
+        if (!result.success) {
+            return c.json(
+                { error: "VALIDATION_ERROR", message: "请求体不符合接口要求" },
+                400,
+            );
+        }
+    }),
+    async (c) => {
+        const body = c.req.valid("json");
+        const order = await orderService.create(body);
+        return c.json({ data: order }, 201);
+    },
+);
+```
+
+`c.req.valid("json")` 返回 schema 推导并解析后的数据，不需要再次 `as CreateOrderInput`。path/query 同样可验证：
+
+```ts
+const paramsSchema = z.object({ orderId: z.string().min(1).max(64) });
+const querySchema = z.object({
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+app.get(
+    "/orders/:orderId",
+    zValidator("param", paramsSchema),
+    zValidator("query", querySchema),
+    (c) => {
+        const { orderId } = c.req.valid("param");
+        const { limit } = c.req.valid("query");
+        return c.json({ data: { orderId, limit } });
+    },
+);
+```
+
+zValidator 的 target 常用值包括 `json`、`query`、`param`、`header`、`form`。只验证当前路由声明的输入，未知字段策略由 schema 决定。
+
+## 7.15 Zod 核心用法
+
+### 对象、字段和嵌套
+
+```ts
+const moneySchema = z.object({
+    currency: z.enum(["CNY", "USD"]),
+    amountMinor: z.number().int().nonnegative(),
+});
+
+const addressSchema = z
+    .object({
+        city: z.string().trim().min(1),
+        street: z.string().trim().max(200),
+        location: z
+            .object({
+                latitude: z.number().min(-90).max(90),
+                longitude: z.number().min(-180).max(180),
+            })
+            .optional(),
+    })
+    .strict();
+```
+
+- `.strip()`：Zod object 默认行为之一，未知键被剥离。
+- `.strict()`：未知键报错，配置和安全敏感请求优先。
+- `.passthrough()`：保留未知键，只在明确需要扩展字段时使用。
+- `.partial()`：所有字段可选，适合部分更新 DTO，但不能直接当业务 Patch 语义。
+- `.pick()` / `.omit()`：从已有 schema 组合公开子集，避免重复定义。
+
+### optional、nullable、nullish 与 default
+
+```ts
+const patchSchema = z.object({
+    displayName: z.string().trim().min(1).optional(), // 可以不传，但不能 null
+    avatarUrl: z.string().url().nullable(), // 必须传，值可以是 null
+    note: z.string().max(500).nullish(), // 可缺失、undefined 或 null
+    pageSize: z.number().int().positive().default(20), // 缺失时填默认值
+});
+```
+
+更新操作要区分未提供设为 null和设为默认值。`exactOptionalPropertyTypes` 下不要无条件构造 `field: undefined` 绕过协议。
+
+### transform、refine 与跨字段验证
+
+```ts
+const credentialsSchema = z
+    .object({
+        username: z.string().trim().toLowerCase().regex(/^[a-z0-9_]{3,32}$/),
+        password: z.string().min(8).max(72),
+        confirmation: z.string(),
+    })
+    .refine((value) => value.password === value.confirmation, {
+        message: "两次密码不一致",
+        path: ["confirmation"],
+    });
+
+const parsed = credentialsSchema.parse(input);
+// parsed.username 已 trim 并转为小写。
+```
+
+`.transform()` 改变输出值或类型；`.refine()` 增加业务附近的格式约束。数据库唯一性、库存和权限不能靠 refine 代替。
+
+### safeParse 与类型推导
+
+```ts
+const result = createOrderSchema.safeParse(await c.req.json());
+if (!result.success) {
+    return c.json({ error: "VALIDATION_ERROR", message: "请求参数不正确" }, 400);
+}
+
+type CreateOrderInput = z.infer<typeof createOrderSchema>;
+const input: CreateOrderInput = result.data;
+```
+
+- `parse()`：失败抛 ZodError，适合有集中错误边界的代码。
+- `safeParse()`：返回 success 判别结果，适合显式分支。
+- `z.infer`：生成输出类型；使用 transform 时输入/输出类型可能不同。
+- 对外只返回统一 `{error,message}`，不要直接返回完整 `result.error` 和原始输入。
+
+## 7.16 Hono 集中错误处理
+
+```ts
+import { HTTPException } from "hono/http-exception";
+
+app.onError((error, c) => {
+    if (error instanceof HTTPException) {
+        return c.json(
+            { error: "HTTP_REQUEST_ERROR", message: error.message },
+            error.status,
+        );
+    }
+
+    if (error instanceof OrderNotFoundError) {
+        return c.json({ error: "ORDER_NOT_FOUND", message: "订单不存在" }, 404);
+    }
+
+    logger.error("request failed", { error, requestId: c.get("requestId") });
+    return c.json({ error: "INTERNAL_ERROR", message: "服务器内部错误" }, 500);
+});
+
+app.notFound((c) => {
+    return c.json({ error: "ROUTE_NOT_FOUND", message: "接口不存在" }, 404);
+});
+```
+
+真实项目优先映射稳定的 AppError，而不是让 Controller 抛任意 HTTPException。5xx 的 message 不包含内部错误详情；ZodError 单独映射为 VALIDATION_ERROR。
+
 上一篇：[架构、目录与模块开发](01-architecture.md) | [返回总目录](../development-guide.md) | 下一篇：[配置加载](04-configuration.md)

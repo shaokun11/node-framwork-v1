@@ -172,4 +172,185 @@ Smoke 测试数据独立且可清理。部署后对远端环境执行 smoke 时�
 - [ ] Vitest 配置、setup、teardown 和超时隔离清晰。
 - [ ] 测试失败输出不包含秘密，清理逻辑不会删除非测试资源。
 
+
+## 17.11 Vitest 安装与配置文件
+
+安装：
+
+```sh
+npm install --save-dev vitest
+# 需要覆盖率时：
+npm install --save-dev @vitest/coverage-v8
+```
+
+`vitest.unit.config.ts`：
+
+```ts
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+    test: {
+        include: ["src/**/*.test.ts"],
+        environment: "node",
+        clearMocks: true,
+        restoreMocks: true,
+        mockReset: true,
+        coverage: {
+            provider: "v8",
+            reporter: ["text", "html"],
+            include: ["src/modules/**", "src/config/**"],
+        },
+    },
+});
+```
+
+`vitest.e2e.config.ts`：
+
+```ts
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+    test: {
+        include: ["test/e2e/**/*.e2e.test.ts"],
+        environment: "node",
+        testTimeout: 30_000,
+        hookTimeout: 30_000,
+        maxWorkers: 1,
+        globalSetup: ["./test/e2e/global-setup.ts"],
+    },
+});
+```
+
+Smoke 使用独立 include `test/smoke/**/*.smoke.test.ts`，不要复用单元配置。E2E/Smoke 的 maxWorkers 是否需要 1 取决于资源隔离；共享 Compose database 时默认串行更安全。
+
+## 17.12 Vitest mock、fake timer 与清理
+
+构造依赖 fake：
+
+```ts
+const repository: OrderRepository = {
+    findByIdempotencyKey: vi.fn(),
+    create: vi.fn(),
+};
+
+vi.mocked(repository.findByIdempotencyKey).mockResolvedValue(existingOrder);
+vi.mocked(repository.create).mockRejectedValue(new Error("must not be called"));
+
+const service = new OrderService(repository, fixedIds, fixedClock);
+await expect(service.create(input)).resolves.toEqual(existingOrder);
+expect(repository.create).not.toHaveBeenCalled();
+```
+
+Mock 只用于当前单元拥有的外部接口，不 mock Order 自身业务规则。每个测试重新创建 repository/service，避免调用记录和实现泄漏。
+
+Fake timer：
+
+```ts
+describe("debounced task", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("runs after the delay", async () => {
+        const task = vi.fn();
+        const runner = debounce(task, 300);
+
+        runner();
+        expect(task).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(300);
+        expect(task).toHaveBeenCalledOnce();
+    });
+});
+```
+
+异步资源用 afterEach/afterAll 关闭。`restoreMocks` 不能替代 Pool、Worker、数据库和进程清理。
+
+## 17.13 Vitest 全局 setup/teardown
+
+`test/e2e/global-setup.ts` 示例职责：
+
+```ts
+export default async function setup() {
+    const environment = await startIsolatedComposeEnvironment();
+    await environment.waitForHealthy();
+    await environment.runMigrations();
+
+    return async () => {
+        await environment.destroy();
+    };
+}
+```
+
+实际实现可用 Docker Compose CLI、Testcontainers 或受控脚本。全局环境信息通过测试 env、临时 JSON 或项目专用 helper 传递，不把秘密写入快照。
+
+如果应用进程在 globalSetup 启动，返回 teardown 必须发送 SIGTERM 并等待退出。若 Vitest worker 异常退出，也应有超时清理和独立 Compose project 便于回收。
+
+## 17.14 E2E 测试辅助进程封装
+
+```ts
+export class TestApplication {
+    constructor(
+        readonly baseUrl: string,
+        private readonly child: ChildProcess,
+    ) {}
+
+    async stop(): Promise<void> {
+        if (this.child.exitCode !== null) return;
+        this.child.kill("SIGTERM");
+        await waitForExit(this.child, 10_000);
+    }
+}
+
+async function startBuiltApplication(): Promise<TestApplication> {
+    const port = await findAvailablePort();
+    const child = spawn(process.execPath, ["dist/main.js"], {
+        env: {
+            ...process.env,
+            APP_SERVER__PORT: String(port),
+            NODE_ENV: "test",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    const app = new TestApplication(`http://127.0.0.1:${port}`, child);
+    await waitForReady(app.baseUrl);
+    return app;
+}
+```
+
+本手册普通配置的 port 默认来自 TOML；如果测试使用环境覆盖 port，需要在项目配置规范中明确启用对应测试映射，否则改用临时 TOML/`--config`，不要让示例与 Loader 规则冲突。
+
+进程 stdout/stderr 应收集到内存或有界临时文件，仅在失败时输出并脱敏。waitForReady 必须有总超时和子进程提前退出分支。
+
+## 17.15 Smoke 测试具体命令与发布位置
+
+本地构建产物：
+
+```sh
+npm run build
+docker compose -p hono-api-smoke -f compose.test.yaml up -d --wait
+npm run test:smoke
+docker compose -p hono-api-smoke -f compose.test.yaml down -v
+```
+
+Docker 镜像：
+
+```sh
+docker build -t order-api:local .
+# 用专用 Compose/容器网络启动镜像和依赖后运行 smoke。
+```
+
+CI 推荐顺序：unit  build  integration/e2e  built smoke  image smoke。部署后在目标环境再运行只读或专用资源的 smoke。
+
+Smoke 失败应阻止发布或触发回滚流程，但不能自动对未知环境执行数据库清理。
+
+## 17.16 Vitest 常见误用
+
+- 只 mock 数据库就声称事务正确：必须用真实数据库集成测试。
+- 所有测试都叫 e2e：按依赖和目的拆分 unit/integration/e2e/smoke。
+- 测试共享开发者 .env：使用隔离测试配置和秘密。
+- 用 sleep 等待服务：使用带超时的 readiness 轮询。
+- fake timer 后忘记恢复：afterEach 恢复真实 timer。
+- 覆盖率高但缺少并发/权限/失败测试：覆盖率不能替代行为验收。
+- Smoke 只检查进程存在：至少检查 ready、一个核心路由和优雅退出。
+
 上一篇：[TypeScript 规范](12-typescript-conventions.md) | [返回总目录](../development-guide.md) | 下一篇：[开发与交付](14-development-delivery.md)

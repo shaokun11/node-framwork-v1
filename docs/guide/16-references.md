@@ -39,4 +39,13 @@
 - [node-postgres](https://node-postgres.com/)
 - [Zod Hono Validator](https://github.com/honojs/middleware/tree/main/packages/zod-validator)
 
+
+## 其他工具官方文档
+
+- [ESLint](https://eslint.org/docs/latest/)
+- [typescript-eslint](https://typescript-eslint.io/getting-started)
+- [Prettier](https://prettier.io/docs/)
+- [npm](https://docs.npmjs.com/)
+- [Docker](https://docs.docker.com/)
+
 上一篇：[裁剪与验收](15-adoption-acceptance.md) | [返回总目录](../development-guide.md)

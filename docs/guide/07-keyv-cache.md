@@ -135,4 +135,166 @@ Cache-Aside 的典型竞争：请求 A 读取旧数据库值，请求 B 更新�
 - 多实例共享（如果设计声称支持）以及重启后的持久性预期。
 - 应用关闭时连接释放，无未处理错误事件。
 
+
+## 11.10 Keyv 安装与内存用法
+
+安装核心包：
+
+```sh
+npm install keyv
+```
+
+不传 Adapter 时使用内存存储，适合开发、测试或允许实例私有的缓存：
+
+```ts
+import Keyv from "keyv";
+
+const cache = new Keyv<{ displayName: string }>({
+    ttl: 60_000,
+    throwOnErrors: true,
+});
+
+await cache.set("account:123", { displayName: "Alice" });
+const value = await cache.get("account:123");
+await cache.delete("account:123");
+```
+
+常用 API：
+
+| API | 作用 | 注意事项 |
+| --- | --- | --- |
+| set(key, value, ttl?) | 写入值，可覆盖默认 TTL | TTL 单位为毫秒 |
+| get(key) | 读取值 | 常见 miss 返回 undefined，领域接口可映射为 null |
+| delete(key) | 删除一个 key | 返回值语义按当前版本测试 |
+| clear() | 清空当前 namespace | 不要对共享大库随意调用 |
+| iterator() | 遍历支持该能力的 store | 不是每个 Adapter 都有相同能力 |
+
+## 11.11 使用 Redis Adapter
+
+安装：
+
+```sh
+npm install keyv @keyv/redis
+```
+
+```ts
+import Keyv from "keyv";
+import KeyvRedis from "@keyv/redis";
+
+const store = new KeyvRedis(config.cache.url, {
+    namespace: "order-api:cache",
+});
+
+const cache = new Keyv<OrderSnapshot>({
+    store,
+    ttl: config.cache.defaultTtlMs,
+    throwOnErrors: true,
+});
+
+cache.on("error", (error) => {
+    logger.error("keyv cache error", { error });
+});
+
+await cache.set("order:123", snapshot, 30_000);
+const cached = await cache.get("order:123");
+```
+
+当前 Keyv/Adapter 大版本要核对 namespace 归属，避免 Keyv 和 Adapter 同时添加 prefix。不要再给底层 Redis client 配置一个未经协调的 keyPrefix。
+
+单次 set 的第三个参数覆盖默认 TTL；省略则使用实例默认 TTL。明确不过期的值要有容量和删除依据，不能无意中永久保存。
+
+## 11.12 其他 Adapter 的安装方式
+
+按需安装，不要为了配置示例全部加入 dependencies：
+
+```sh
+# PostgreSQL
+npm install @keyv/postgres
+
+# MongoDB
+npm install @keyv/mongo
+
+# SQLite
+npm install @keyv/sqlite
+```
+
+Adapter 工厂示例：
+
+```ts
+export function createCacheStore(config: CacheConfig): KeyvStoreAdapter {
+    switch (config.adapter) {
+        case "redis":
+            return new KeyvRedis(config.url, { namespace: config.namespace });
+        case "postgres":
+            return new KeyvPostgres(config.url, { table: config.table });
+        case "sqlite":
+            return new KeyvSqlite(config.url);
+        case "memory":
+            return new Map();
+        default:
+            throw new Error(`Unsupported cache adapter: ${config.adapter}`);
+    }
+}
+```
+
+具体 constructor 以安装版本官方文档为准。工厂是允许 import Adapter 的基础设施边界，Service 只接收 OrderSnapshotCache 等业务接口。
+
+## 11.13 实现类型安全的 Cache-Aside
+
+```ts
+export class KeyvOrderSnapshotCache implements OrderSnapshotCache {
+    constructor(private readonly cache: Keyv<unknown>) {}
+
+    async get(orderId: string): Promise<OrderSnapshot | null> {
+        const value = await this.cache.get(this.key(orderId));
+        if (value === undefined) return null;
+
+        const result = orderSnapshotSchema.safeParse(value);
+        if (!result.success) {
+            await this.cache.delete(this.key(orderId));
+            return null;
+        }
+        return result.data;
+    }
+
+    async set(orderId: string, value: OrderSnapshot, ttlMs: number): Promise<void> {
+        await this.cache.set(this.key(orderId), value, ttlMs);
+    }
+
+    async delete(orderId: string): Promise<void> {
+        await this.cache.delete(this.key(orderId));
+    }
+
+    private key(orderId: string): string {
+        return `order:v1:${orderId}`;
+    }
+}
+```
+
+使用 Cache-Aside：
+
+```ts
+const cached = await orderCache.get(orderId);
+if (cached) return cached;
+
+const order = await orderRepository.findById(orderId, ownerId);
+if (!order) return null;
+
+const snapshot = toOrderSnapshot(order);
+await orderCache.set(orderId, snapshot, 60_000);
+return snapshot;
+```
+
+普通缓存可降级时，set 失败可以记录并返回数据库结果；但写后 delete 失败必须记录旧值风险并按策略补偿。
+
+## 11.14 Keyv 常见误用
+
+- 把内存 Keyv 当多实例共享缓存：不同实例不会共享数据。
+- 把 get 的 undefined 当业务 null：在 Adapter 边界明确转换。
+- 用 get/set 实现限流计数：读改写不是原子操作，改用 Redis INCR/Lua。
+- 把 Keyv 当可靠队列：没有 ACK、消费组和持久重试保证。
+- 忽略 error event：可能失去故障可见性，throwOnErrors 与事件策略要一致。
+- 更换 Adapter 不换序列化/版本：旧值可能无法解析，使用版本化 namespace 并运行契约测试。
+- 不关闭 Adapter：应用退出时按当前 Adapter 文档断开底层 client，由 bootstrap 统一执行。
+
 上一篇：[MongoDB + Mongoose](06-mongodb-mongoose.md) | [返回总目录](../development-guide.md) | 下一篇：[Redis 原生能力](08-redis.md)

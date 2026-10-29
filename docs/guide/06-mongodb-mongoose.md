@@ -125,4 +125,213 @@ try {
 - [ ] 多文档事务使用同一 session，拓扑和重试副作用明确。
 - [ ] 文档演进有版本、回填和回滚方案。
 
+
+## 10.11 Mongoose 安装、连接与 Model
+
+安装：
+
+```sh
+npm install mongoose
+```
+
+推荐由基础设施创建独立 Connection，而不是在业务模块使用全局 mongoose 连接：
+
+```ts
+import mongoose from "mongoose";
+
+export async function createMongoConnection(config: MongoConfig) {
+    const connection = mongoose.createConnection(config.url, {
+        autoIndex: false,
+        serverSelectionTimeoutMS: config.connectTimeoutMs,
+        maxPoolSize: config.maxPoolSize,
+    });
+
+    connection.on("error", (error) => {
+        logger.error("mongodb connection error", { error });
+    });
+
+    await connection.asPromise();
+    return connection;
+}
+```
+
+关闭时由创建者调用 `await connection.close()`。不要在每次请求 createConnection，也不要让 Repository 关闭共享 Connection。
+
+定义 Schema 和 Model：
+
+```ts
+import { Schema, type InferSchemaType } from "mongoose";
+
+const orderItemSchema = new Schema(
+    {
+        sku: { type: String, required: true, trim: true, maxlength: 64 },
+        quantity: { type: Number, required: true, min: 1, max: 1000 },
+    },
+    { _id: false },
+);
+
+export const orderSchema = new Schema(
+    {
+        _id: { type: String, required: true },
+        ownerId: { type: String, required: true },
+        idempotencyKey: { type: String, required: true },
+        status: {
+            type: String,
+            enum: ["pending", "paid", "cancelled"],
+            required: true,
+        },
+        items: { type: [orderItemSchema], default: [] },
+    },
+    {
+        collection: "orders",
+        timestamps: true,
+        strict: "throw",
+        autoIndex: false,
+        optimisticConcurrency: true,
+    },
+);
+
+orderSchema.index({ ownerId: 1, createdAt: -1 });
+orderSchema.index({ ownerId: 1, idempotencyKey: 1 }, { unique: true });
+
+export type OrderDocument = InferSchemaType<typeof orderSchema>;
+```
+
+把 Model 绑定到指定 Connection：
+
+```ts
+const OrderModel = connection.model("Order", orderSchema);
+```
+
+生产索引通过迁移创建。开发临时开启 autoIndex 也不能代替共享环境的索引发布流程。
+
+## 10.12 Mongoose CRUD 使用
+
+### 创建
+
+```ts
+const document = await OrderModel.create({
+    _id: order.id,
+    ownerId: order.ownerId,
+    idempotencyKey: order.idempotencyKey,
+    status: order.status,
+    items: order.items,
+});
+
+return toDomainOrder(document.toObject({ versionKey: false }));
+```
+
+`create()` 会执行 Mongoose 验证。重复唯一索引要捕获 MongoServerError 风格的 code 11000，并映射为领域冲突。
+
+### 查询
+
+```ts
+const document = await OrderModel.findOne({
+    _id: orderId,
+    ownerId,
+})
+    .select({ _id: 1, ownerId: 1, status: 1, items: 1, createdAt: 1 })
+    .lean()
+    .exec();
+
+const orders = await OrderModel.find({ ownerId })
+    .sort({ createdAt: -1, _id: -1 })
+    .limit(20)
+    .lean()
+    .exec();
+```
+
+`lean()` 返回普通对象，适合只读 Repository；没有 Document save、methods 和部分 Mongoose 行为。需要修改并 save 时不要 lean。
+
+### 更新
+
+```ts
+const updated = await OrderModel.findOneAndUpdate(
+    { _id: orderId, ownerId, status: "pending" },
+    { $set: { status: "paid" } },
+    { new: true, runValidators: true },
+).exec();
+
+if (!updated) {
+    // 区分不存在和状态冲突。
+}
+```
+
+- `new: true` 返回更新后的文档。
+- `runValidators: true` 对更新执行支持的 Mongoose validators。
+- filter 中的 status 保证状态转换原子性。
+- 不直接传 req.body，Repository 白名单选择 `$set`、`$unset`、`$inc`。
+
+### 删除
+
+```ts
+const result = await OrderModel.deleteOne({ _id: orderId, ownerId }).exec();
+if (result.deletedCount === 0) return null;
+```
+
+删除前检查业务状态。软删除使用条件 update，并在所有查询中统一过滤。
+
+## 10.13 验证、类型与 Document 映射
+
+```ts
+orderSchema.path("items").validate((items: unknown[]) => {
+    return items.length > 0 && items.length <= 100;
+}, "order must contain 1-100 items");
+```
+
+Mongoose 验证是最后持久化防线之一，API 仍需 Zod 验证。Mongoose cast error、ValidationError、duplicate key 和 VersionError 是不同类别，Repository 映射时保留 cause 但对外不泄漏。
+
+Document 到领域对象使用显式 mapper：
+
+```ts
+function toDomainOrder(document: OrderPersistenceShape): Order {
+    return {
+        id: document._id,
+        ownerId: document.ownerId,
+        status: document.status,
+        items: document.items.map((item) => ({
+            sku: item.sku,
+            quantity: item.quantity,
+        })),
+        createdAt: document.createdAt,
+    };
+}
+```
+
+不要直接返回 Mongoose Document，也不要用 JSON.parse(JSON.stringify(document)) 代替映射。
+
+## 10.14 Mongoose 多文档事务使用
+
+```ts
+const session = await connection.startSession();
+try {
+    await session.withTransaction(async () => {
+        await OrderModel.create([orderRow], { session });
+        await InventoryModel.updateOne(
+            { sku, available: { $gte: quantity } },
+            { $inc: { available: -quantity } },
+            { session, runValidators: true },
+        );
+    });
+} finally {
+    await session.endSession();
+}
+```
+
+- 每个参与操作都传同一个 session。
+- callback 可能重试，不能包含不可撤销外部副作用。
+- 检查条件更新 matchedCount，防止库存条件不满足却仍提交订单。
+- 测试环境必须是 replica set 或支持事务的部署。
+- 单文档可完成的原子更新不需要事务。
+
+## 10.15 Mongoose 常见问题
+
+- Model 编译重复：不要在热更新或请求中重复 connection.model，统一在装配阶段创建。
+- 更新验证没执行：检查 runValidators 和当前 Mongoose 对 update validators 的支持范围。
+- autoIndex 导致启动慢：生产关闭并用迁移管理索引。
+- lean 后方法不存在：这是预期行为，只读使用 lean，写 Document 时显式选择。
+- 文档无限增长：检查嵌入数组，改为有界数组或独立集合。
+- 查询被注入 operator：不要直接传 req.query/req.body，使用 Zod + Repository 白名单构造。
+- 事务报拓扑不支持：本地 standalone 不支持，启动 replica set 测试环境。
+
 上一篇：[PostgreSQL + Drizzle](05-postgresql-drizzle.md) | [返回总目录](../development-guide.md) | 下一篇：[Keyv 缓存](07-keyv-cache.md)

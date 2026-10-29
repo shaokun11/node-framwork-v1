@@ -123,4 +123,222 @@ export class DrizzleOrderRepository implements OrderRepository {
 - [ ] 查询有索引和结果上限，没有 N+1 和无界批量。
 - [ ] API 启动不自动执行生产迁移，回滚方案明确。
 
+
+## 9.10 Drizzle 安装、连接与 Schema
+
+安装：
+
+```sh
+npm install drizzle-orm pg
+npm install --save-dev drizzle-kit @types/pg
+```
+
+定义 Schema：
+
+```ts
+import { index, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+
+export const orders = pgTable(
+    "orders",
+    {
+        id: text("id").primaryKey(),
+        ownerId: text("owner_id").notNull(),
+        status: text("status", { enum: ["pending", "paid", "cancelled"] }).notNull(),
+        idempotencyKey: text("idempotency_key").notNull(),
+        createdAt: timestamp("created_at", { withTimezone: true, mode: "date" })
+            .notNull()
+            .defaultNow(),
+    },
+    (table) => [
+        uniqueIndex("orders_owner_idempotency_uq").on(table.ownerId, table.idempotencyKey),
+        index("orders_owner_created_idx").on(table.ownerId, table.createdAt),
+    ],
+);
+
+export type OrderRow = typeof orders.$inferSelect;
+export type NewOrderRow = typeof orders.$inferInsert;
+```
+
+`OrderRow` 和 `NewOrderRow` 仅在 infrastructure 使用。对外领域对象通过显式 mapper 创建。
+
+创建 Pool 和 Drizzle：
+
+```ts
+import { Pool } from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
+import * as schema from "./schema.ts";
+
+export function createOrderDatabase(config: PostgresConfig) {
+    const pool = new Pool({
+        connectionString: config.url,
+        max: config.poolMax,
+        connectionTimeoutMillis: config.connectionTimeoutMs,
+        idleTimeoutMillis: config.idleTimeoutMs,
+        ssl: config.ssl,
+    });
+
+    pool.on("error", (error) => {
+        logger.error("postgres idle client error", { error });
+    });
+
+    return {
+        db: drizzle(pool, { schema }),
+        close: () => pool.end(),
+    };
+}
+```
+
+应用关闭时调用 `pool.end()`，Repository 不负责关闭 Pool。不要在每次请求创建 new Pool。
+
+## 9.11 Drizzle CRUD 使用
+
+### 查询单条与列表
+
+```ts
+import { and, desc, eq, gt } from "drizzle-orm";
+
+const row = await db.query.orders.findFirst({
+    where: and(eq(orders.id, orderId), eq(orders.ownerId, ownerId)),
+});
+
+const rows = await db
+    .select()
+    .from(orders)
+    .where(and(eq(orders.ownerId, ownerId), gt(orders.createdAt, after)))
+    .orderBy(desc(orders.createdAt), desc(orders.id))
+    .limit(20);
+```
+
+`findFirst` 不存在时按当前返回类型处理 undefined，不做非空断言。列表必须有 limit 和稳定排序。
+
+### 插入
+
+```ts
+const inserted = await db
+    .insert(orders)
+    .values({
+        id: order.id,
+        ownerId: order.ownerId,
+        status: order.status,
+        idempotencyKey: order.idempotencyKey,
+        createdAt: order.createdAt,
+    })
+    .returning();
+
+const row = inserted[0];
+if (!row) throw new Error("insert returned no row");
+```
+
+批量 values 需要分批，避免参数上限和超大事务。插入冲突使用 onConflictDoNothing/onConflictDoUpdate 时，要明确返回行数和冲突语义。
+
+### 条件更新
+
+```ts
+const updated = await db
+    .update(orders)
+    .set({ status: "paid" })
+    .where(and(eq(orders.id, orderId), eq(orders.status, "pending")))
+    .returning();
+
+if (!updated[0]) {
+    // 区分订单不存在与状态冲突；必要时再查询。
+}
+```
+
+条件更新把只有 pending 才能支付放进数据库原子操作，避免先查后改的竞争。
+
+### 删除
+
+```ts
+const deleted = await db
+    .delete(orders)
+    .where(and(eq(orders.id, orderId), eq(orders.ownerId, ownerId)))
+    .returning({ id: orders.id });
+```
+
+业务删除需要权限、归属和状态条件。软删除则使用条件 UPDATE，并明确唯一索引和查询过滤。
+
+## 9.12 Drizzle 事务与错误映射
+
+```ts
+const created = await db.transaction(async (tx) => {
+    const orderRows = await tx.insert(orders).values(orderRow).returning();
+    const order = orderRows[0];
+    if (!order) throw new Error("order insert returned no row");
+
+    await tx.insert(orderItems).values(toItemRows(order, items));
+    return order;
+});
+```
+
+事务 callback 抛错会回滚。所有语句必须使用 tx，混用 db 会使部分语句脱离事务。事务外再执行缓存删除、消息发送和 Winston 业务摘要。
+
+PostgreSQL 错误通过类型守卫读取 code：
+
+```ts
+function isPostgresError(error: unknown): error is { code: string; constraint?: string } {
+    return typeof error === "object" && error !== null && "code" in error;
+}
+
+try {
+    await insertOrder();
+} catch (error) {
+    if (
+        isPostgresError(error) &&
+        error.code === "23505" &&
+        error.constraint === "orders_owner_idempotency_uq"
+    ) {
+        throw new OrderIdempotencyConflict({ cause: error });
+    }
+    throw error;
+}
+```
+
+不要只比较 error.message，数据库驱动升级和消息语言可能变化。
+
+## 9.13 drizzle-kit 配置与迁移命令
+
+`drizzle.config.ts`：
+
+```ts
+import { defineConfig } from "drizzle-kit";
+
+export default defineConfig({
+    dialect: "postgresql",
+    schema: "./src/infrastructure/database/postgres/schema.ts",
+    out: "./drizzle",
+    dbCredentials: {
+        url: process.env.APP_DATABASE_URL ?? "",
+    },
+    strict: true,
+    verbose: true,
+});
+```
+
+CLI 是配置边界的例外，可以读取进程环境；应用业务代码仍通过 ConfigLoader。不能在仓库中硬编码真实 URL。
+
+常用命令：
+
+```sh
+# 根据 schema 生成迁移，生成后必须审查 SQL
+npx drizzle-kit generate
+
+# 对当前配置数据库执行已生成迁移
+npx drizzle-kit migrate
+
+# 本地检查 schema/生成物；具体子命令以当前 drizzle-kit 版本为准
+npx drizzle-kit check
+```
+
+`generate` 不等于已应用迁移。共享开发、测试和生产环境使用同一套已提交迁移文件；不用 `drizzle-kit push` 替代正式迁移。
+
+## 9.14 Drizzle 使用常见问题
+
+- 查询类型正确但数据库报错：先检查迁移是否应用、连接的是否预期数据库。
+- returning 数组为空：检查冲突分支和 affected rows，不要直接 `[0]!`。
+- 事务没有回滚全部语句：检查是否误用了 db 而不是 tx。
+- timestamp 时区偏移：检查 mode、withTimezone、Node 时区和 API 序列化。
+- numeric 变成字符串：这是避免精度丢失的常见驱动行为，用领域 Decimal 处理，不直接 Number。
+- 测试通过但生产重复数据：检查唯一约束是否真实存在，InMemory fake 不能证明。
+
 上一篇：[配置加载](04-configuration.md) | [返回总目录](../development-guide.md) | 下一篇：[MongoDB + Mongoose](06-mongodb-mongoose.md)

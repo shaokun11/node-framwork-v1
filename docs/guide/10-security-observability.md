@@ -95,4 +95,168 @@ redaction 采用递归键白名单/黑名单策略，并限制深度和循环引
 - [ ] 安全审计事件和日志保留满足项目要求。
 - [ ] shutdown 能结束 Winston transports，不因日志 I/O 无限悬挂。
 
+
+## 14.9 Winston 安装与开发/生产配置
+
+安装：
+
+```sh
+npm install winston
+```
+
+基础 Logger：
+
+```ts
+import winston from "winston";
+
+const { combine, timestamp, errors, json } = winston.format;
+
+export function createHttpLogger(config: LoggingConfig): winston.Logger {
+    return winston.createLogger({
+        level: config.level,
+        defaultMeta: { service: "order-api" },
+        format: combine(
+            errors({ stack: true }),
+            timestamp(),
+            createRedactionFormat(),
+            json(),
+        ),
+        transports: [new winston.transports.Console()],
+    });
+}
+```
+
+使用：
+
+```ts
+logger.info("application started", { port: config.server.port });
+logger.warn("cache fallback", { operation: "order.read", requestId });
+logger.error("request failed", {
+    requestId,
+    error: serializeError(error),
+});
+```
+
+常用级别从详细到严重通常为 debug、info、warn、error。应用配置只允许项目声明的级别，不用动态字符串直接控制 transport。
+
+开发可读输出：
+
+```ts
+const developmentFormat = combine(
+    winston.format.colorize(),
+    timestamp(),
+    createRedactionFormat(),
+    winston.format.printf((info) => {
+        const { timestamp, level, message, ...metadata } = info;
+        return `${timestamp} ${level} ${message} ${JSON.stringify(metadata)}`;
+    }),
+);
+```
+
+printf 必须在 redaction 之后，否则可能把原始秘密 stringify。Error 的 stack、cause 和 metadata 也要经过序列化与脱敏。
+
+## 14.10 请求日志与 child logger
+
+为请求创建带默认 metadata 的 child：
+
+```ts
+app.use("*", async (c, next) => {
+    const requestLogger = httpLogger.child({
+        requestId: c.get("requestId"),
+        method: c.req.method,
+        route: c.req.routePath,
+    });
+    c.set("logger", requestLogger);
+    await next();
+});
+```
+
+Controller 不直接输出日志；需要记录业务事件时注入 logger 或使用请求级辅助。避免每个中间件重复打印同一请求完成事件。
+
+推荐事件：
+
+```ts
+requestLogger.info("order created", {
+    orderId: order.id,
+    ownerId: order.ownerId,
+    outcome: "created",
+});
+```
+
+orderId/ownerId 是否需要记录由隐私和日志保留策略决定；它们可以进日志，但不能作为无上限指标 label。
+
+## 14.11 正确记录 Error 和 cause
+
+Winston 不会自动把所有嵌套 Error 字段变成可读堆栈，使用显式序列化：
+
+```ts
+function serializeError(error: unknown): Record<string, unknown> {
+    if (!(error instanceof Error)) {
+        return { name: "NonErrorThrow", message: String(error) };
+    }
+
+    return {
+        name: error.name,
+        message: error.message,
+        stack: error.stack,
+        cause: error.cause instanceof Error
+            ? {
+                  name: error.cause.name,
+                  message: error.cause.message,
+                  stack: error.cause.stack,
+              }
+            : error.cause,
+    };
+}
+```
+
+实现时限制 cause 深度并处理循环引用。对客户端仍只返回 `{error,message}` 的通用 5xx，完整 stack 只进入受控日志。
+
+## 14.12 文件 transport 与日志轮转
+
+```ts
+const fileTransport = new winston.transports.File({
+    filename: "runtime/logs/api.log",
+    maxsize: 100 * 1024 * 1024,
+    maxFiles: 7,
+    tailable: true,
+});
+
+fileTransport.on("error", (error) => {
+    // 使用受控 stderr fallback，避免 logger.error 形成循环。
+    console.error("winston file transport failed", error);
+});
+```
+
+需要按日期轮转时可引入 `winston-daily-rotate-file`，但要锁定版本并配置文件名、日期、maxFiles、压缩和权限。每个进程/副本使用独立文件路径，容器优先 stdout 交给平台收集。
+
+日志目录由部署创建并限制权限；不提交 runtime logs，不把日志卷当无限容量。
+
+## 14.13 Winston 关闭与测试
+
+正常退出时停止接收新业务日志，再按 transport 语义 flush/end。不要仅 `process.exit(0)`，否则异步写入可能丢失。
+
+```ts
+async function closeLogger(logger: winston.Logger): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("logger close timeout")), 5000);
+        logger.once("finish", () => {
+            clearTimeout(timer);
+            resolve();
+        });
+        logger.end();
+    });
+}
+```
+
+实际项目需按所用 transports 验证 finish/close 行为，并避免 close timeout 后留下未处理 rejection。
+
+Winston 单元测试使用 MemoryTransport 或自定义测试 transport：
+
+- 验证 level 过滤和必要字段。
+- 验证 authorization、cookie、token、URL userinfo 被脱敏。
+- 验证 Error stack/cause 可序列化。
+- 验证 Hono 请求日志只记录一次且包含 route template。
+- 验证文件 transport error 和 shutdown 不会无限悬挂。
+
 上一篇：[应用生命周期](09-application-lifecycle.md) | [返回总目录](../development-guide.md) | 下一篇：[性能与 Tinypool](11-performance-workers.md)

@@ -48,6 +48,24 @@
 | 15 | [新项目裁剪与验收](guide/15-adoption-acceptance.md) | 采用步骤、完整验收清单、ADR 和交付证据 |
 | 16 | [官方资料](guide/16-references.md) | 全部技术的官方文档入口和版本使用规则 |
 
+## 2.1 实战使用示例索引
+
+| 技术 | 快速上手 | 进一步内容 |
+| --- | --- | --- |
+| Hono | [安装、启动、路由与 Context](guide/02-http-api.md#711-hono-安装与最小可运行示例) | [中间件与 logger](guide/02-http-api.md#713-hono-中间件与内置-logger)、[集中错误](guide/02-http-api.md#716-hono-集中错误处理) |
+| Zod | [zValidator 接入](guide/02-http-api.md#714-zvalidator把-zod-接入-hono) | [对象、转换、safeParse](guide/02-http-api.md#715-zod-核心用法) |
+| smol-toml / dotenv | [读取与合并](guide/04-configuration.md#811-smol-toml-与-dotenv-实际上手) | [Loader 骨架](guide/04-configuration.md#812-配置加载器实现骨架)、[条件校验](guide/04-configuration.md#815-当前选型的条件校验) |
+| Drizzle / PostgreSQL | [连接与 Schema](guide/05-postgresql-drizzle.md#910-drizzle-安装连接与-schema) | [CRUD](guide/05-postgresql-drizzle.md#911-drizzle-crud-使用)、[事务与迁移](guide/05-postgresql-drizzle.md#912-drizzle-事务与错误映射) |
+| Mongoose / MongoDB | [连接与 Model](guide/06-mongodb-mongoose.md#1011-mongoose-安装连接与-model) | [CRUD](guide/06-mongodb-mongoose.md#1012-mongoose-crud-使用)、[事务](guide/06-mongodb-mongoose.md#1014-mongoose-多文档事务使用) |
+| Keyv | [内存与 API](guide/07-keyv-cache.md#1110-keyv-安装与内存用法) | [Redis Adapter](guide/07-keyv-cache.md#1111-使用-redis-adapter)、[Cache-Aside](guide/07-keyv-cache.md#1113-实现类型安全的-cache-aside) |
+| Redis | [客户端与数据结构](guide/08-redis.md#128-redis-客户端安装与基础命令) | [Lua](guide/08-redis.md#129-原子计数过期与-lua)、[锁与 Stream](guide/08-redis.md#1210-分布式锁的具体实现) |
+| Winston | [开发/生产 Logger](guide/10-security-observability.md#149-winston-安装与开发生产配置) | [Error、transport 与关闭](guide/10-security-observability.md#1411-正确记录-error-和-cause) |
+| es-toolkit | [安装与常用函数](guide/11-performance-workers.md#1510-es-toolkit-安装与常用函数) | 批量、去重、debounce/throttle |
+| Tinypool | [完整 Worker 示例](guide/11-performance-workers.md#1511-tinypool-安装与完整-worker-示例) | [路径与并发控制](guide/11-performance-workers.md#1512-tinypool-开发生产路径与并发控制) |
+| Vitest | [安装与配置](guide/13-testing.md#1711-vitest-安装与配置文件) | [mock](guide/13-testing.md#1712-vitest-mockfake-timer-与清理)、[E2E/Smoke](guide/13-testing.md#1714-e2e-测试辅助进程封装) |
+| TypeScript / tsx | [开发到构建运行](guide/12-typescript-conventions.md#167-typescript-开发到运行完整流程) | [tsx 使用](guide/14-development-delivery.md#189-tsx-安装与实际使用) |
+| Prettier / ESLint | [Prettier](guide/14-development-delivery.md#1810-prettier-安装与格式化) | [ESLint flat config](guide/14-development-delivery.md#1811-eslint-安装与类型感知规则) |
+| Docker Compose | [开发环境完整示例](guide/14-development-delivery.md#186-docker-compose-开发环境) | profiles、健康检查、测试隔离 |
 ## 3. 推荐阅读路径
 
 ### 3.1 从零建立项目

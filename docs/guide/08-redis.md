@@ -80,4 +80,165 @@ Stream 消费者必须处理至少一次投递：业务幂等、处理成功后 
 - [ ] Cluster hash slot、重连和命令兼容性按部署形态验证。
 - [ ] 应用关闭时订阅、阻塞命令和普通 client 都能退出。
 
+
+## 12.8 Redis 客户端安装与基础命令
+
+安装官方 Node.js 客户端：
+
+```sh
+npm install redis
+```
+
+连接与 String 操作：
+
+```ts
+import { createClient } from "redis";
+
+const redis = createClient({
+    url: config.redis.url,
+    socket: {
+        connectTimeout: config.redis.connectTimeoutMs,
+        reconnectStrategy: (retries) => Math.min(retries * 100, 2000),
+    },
+});
+
+redis.on("error", (error) => {
+    logger.error("redis client error", { error });
+});
+
+await redis.connect();
+
+await redis.set("order:123", "pending", { EX: 60 });
+const status = await redis.get("order:123");
+await redis.del("order:123");
+```
+
+应用启动只 connect 一次，关闭时按客户端当前状态使用 quit/disconnect。quit 适合正常关闭，强制断开可能丢失正在发送的命令；生命周期策略要测试。
+
+常用数据结构：
+
+```ts
+// Hash
+await redis.hSet("session:123", { accountId: "acc_1", role: "user" });
+const session = await redis.hGetAll("session:123");
+await redis.expire("session:123", 3600);
+
+// List
+await redis.lPush("jobs:pending", ["job-1"]);
+const job = await redis.rPop("jobs:pending");
+
+// Set
+await redis.sAdd("order:123:tags", ["priority", "paid"]);
+const isPaid = await redis.sIsMember("order:123:tags", "paid");
+
+// Sorted Set
+await redis.zAdd("leaderboard", [{ score: 100, value: "acc_1" }]);
+const top = await redis.zRangeWithScores("leaderboard", 0, 9, { REV: true });
+```
+
+生产代码通过专门 Repository/Service 封装命令，不让 Controller 任意拼 key 和命令。
+
+## 12.9 原子计数、过期与 Lua
+
+简单计数：
+
+```ts
+const key = "rate:login:acc_1";
+const attempts = await redis.incr(key);
+if (attempts === 1) {
+    await redis.expire(key, 60);
+}
+```
+
+INCR 与 EXPIRE 分两次调用存在第一次成功后进程崩溃、key 永不过期的窗口。严格实现使用 Lua：
+
+```ts
+const result = await redis.eval(
+    `local current = redis.call("INCR", KEYS[1])
+     if current == 1 then
+         redis.call("EXPIRE", KEYS[1], ARGV[1])
+     end
+     return current`,
+    {
+        keys: ["rate:login:acc_1"],
+        arguments: ["60"],
+    },
+);
+```
+
+返回类型按当前客户端和脚本定义显式转换。脚本保持短小，Cluster 下相关 keys 使用相同 hash tag，例如 `rate:{acc_1}:login`。
+
+## 12.10 分布式锁的具体实现
+
+```ts
+const token = crypto.randomUUID();
+const acquired = await redis.set(
+    "order:123:lock",
+    token,
+    { NX: true, PX: 30_000 },
+);
+
+if (acquired !== "OK") {
+    throw new OrderProcessingConflict();
+}
+
+try {
+    await processOrder();
+} finally {
+    await redis.eval(
+        `if redis.call("GET", KEYS[1]) == ARGV[1] then
+             return redis.call("DEL", KEYS[1])
+         end
+         return 0`,
+        { keys: ["order:123:lock"], arguments: [token] },
+    );
+}
+```
+
+只有 GET 的值等于自己的 token 才删除。任务可能超过 30 秒时仍需续约/fencing 或数据库条件保护，不能只延长 TTL 就认为绝对安全。
+
+## 12.11 Pub/Sub 与 Stream 基本用法
+
+Pub/Sub 使用独立订阅连接：
+
+```ts
+const subscriber = redis.duplicate();
+subscriber.on("error", (error) => logger.error("redis subscriber error", { error }));
+await subscriber.connect();
+
+await subscriber.subscribe("order-events", (message) => {
+    eventHandler.handle(message);
+});
+
+await redis.publish("order-events", JSON.stringify({ type: "paid", orderId }));
+```
+
+Pub/Sub 不保证离线消息和至少一次处理。可靠任务使用 Stream：
+
+```ts
+await redis.xAdd("order-jobs", "*", { orderId: "ord_123" });
+await redis.xGroupCreate("order-jobs", "workers", "0", { MKSTREAM: true });
+
+const messages = await redis.xReadGroup(
+    "workers",
+    "consumer-1",
+    [{ key: "order-jobs", id: ">" }],
+    { COUNT: 10, BLOCK: 5000 },
+);
+
+// 业务处理成功后再 XACK；pending、重试和死信需要完整实现。
+```
+
+订阅连接和阻塞读取在 shutdown 时先停止新消费，再完成/取消当前任务，最后关闭连接。
+
+## 12.12 Redis 使用常见问题
+
+- connect 后没有 error listener：连接错误可能导致不可见故障或进程问题。
+- 每次请求创建 client：造成连接泄漏和握手放大，应由 bootstrap 复用。
+- 用 DEL 释放任意锁：可能删除其他持有者锁，必须 token + Lua。
+- 用 Pub/Sub 做可靠队列：订阅者离线会丢消息。
+- 用 KEYS 清理前缀：生产可能阻塞，优先受控 namespace/SCAN/明确 key。
+- 多实例各用本地 Map 限流：不是全局限流，使用共享原子实现。
+- 把缓存数据库当永久事实源：Redis 持久化和驱逐策略不一定满足业务持久性。
+
 上一篇：[Keyv 缓存](07-keyv-cache.md) | [返回总目录](../development-guide.md) | 下一篇：[应用生命周期](09-application-lifecycle.md)

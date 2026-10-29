@@ -192,4 +192,190 @@ URL 密码包含特殊字符时按 URL 编码规则处理。启动摘要不打�
 - production 使用 `APP_SESSION_SECRET=replace-me`：启动失败。
 - TOML 写错 `shutdownTimeOut`：因未知键失败，不回退默认 15 秒。
 
+
+## 8.11 smol-toml 与 dotenv 实际上手
+
+安装：
+
+```sh
+npm install smol-toml dotenv zod
+```
+
+读取 TOML：
+
+```ts
+import { readFile } from "node:fs/promises";
+import { parse } from "smol-toml";
+
+async function readTomlFile(path: string): Promise<Record<string, unknown>> {
+    const source = await readFile(path, "utf8");
+    return parse(source) as Record<string, unknown>;
+}
+```
+
+`parse()` 负责把 TOML 文本转换为 JavaScript 数据。返回对象仍然只是 unknown 配置输入，必须经过最终 Zod schema 才能当作 AppConfig 使用。
+
+读取 `.env` 时推荐 `dotenv.parse()`，避免 `dotenv.config()` 自动改写进程全局环境：
+
+```ts
+import { readFile } from "node:fs/promises";
+import { parse as parseDotenv } from "dotenv";
+
+const dotenvValues = parseDotenv(await readFile(".env", "utf8"));
+const secretEnvironment = {
+    ...dotenvValues,
+    ...pickDefinedSecretValues(process.env),
+};
+```
+
+展开顺序表示进程环境覆盖 `.env`。`pickDefinedSecretValues` 只挑选白名单变量，并过滤 undefined，不能把整个 process.env 展开进配置对象。
+
+## 8.12 配置加载器实现骨架
+
+```ts
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { parse as parseDotenv } from "dotenv";
+import { parse as parseToml } from "smol-toml";
+
+export class ConfigLoader {
+    async load(options: LoadConfigOptions): Promise<AppConfig> {
+        const layers: Record<string, unknown>[] = [structuredClone(defaultConfig)];
+
+        const localPath = `${options.cwd}/config.toml`;
+        if (existsSync(localPath)) {
+            layers.push(await this.readToml(localPath));
+        }
+
+        for (const path of options.configPaths) {
+            layers.push(await this.readToml(path));
+        }
+
+        const dotenvValues = await this.readOptionalDotenv(`${options.cwd}/.env`);
+        const secrets = {
+            ...dotenvValues,
+            ...pickDefinedSecretValues(options.processEnv),
+        };
+
+        const merged = layers.reduce((result, layer) => mergeConfig(result, layer), {});
+        const withSecrets = applySecretEnvironment(merged, secrets);
+        return configSchema.parse(withSecrets);
+    }
+
+    private async readToml(path: string): Promise<Record<string, unknown>> {
+        return parseToml(await readFile(path, "utf8")) as Record<string, unknown>;
+    }
+
+    private async readOptionalDotenv(path: string): Promise<Record<string, string>> {
+        if (!existsSync(path)) return {};
+        return parseDotenv(await readFile(path, "utf8"));
+    }
+}
+```
+
+这段骨架展示加载顺序，项目还需实现并测试：
+
+- `mergeConfig`：table 递归合并，数组/标量替换，安全处理对象键。
+- `applySecretEnvironment`：白名单变量到配置路径的显式映射。
+- `configSchema`：完整 strict 对象、时长/大小转换和跨字段校验。
+- 错误包装：指出文件和配置键，但不打印秘密值。
+
+## 8.13 重复 --config 参数解析
+
+```ts
+export function collectConfigPaths(argv: readonly string[]): string[] {
+    const paths: string[] = [];
+    for (let index = 0; index < argv.length; index += 1) {
+        if (argv[index] !== "--config") continue;
+        const path = argv[index + 1];
+        if (!path || path.startsWith("--")) {
+            throw new Error("--config requires a file path");
+        }
+        paths.push(path);
+        index += 1;
+    }
+    return paths;
+}
+
+const configPaths = collectConfigPaths(process.argv.slice(2));
+```
+
+调用示例：
+
+```sh
+npm run dev -- --config ./config.local.toml --config ./config.override.toml
+```
+
+最终普通配置优先级为 defaults < config.toml < config.local.toml < config.override.toml。测试应验证两个文件包含同一 table、数组和标量时的结果。
+
+## 8.14 用 Zod 转换时长与大小
+
+```ts
+const durationSchema = z
+    .string()
+    .regex(/^\d+(ms|s|m)$/)
+    .transform((value) => {
+        const amount = Number.parseInt(value, 10);
+        if (value.endsWith("ms")) return amount;
+        if (value.endsWith("s")) return amount * 1000;
+        return amount * 60_000;
+    })
+    .pipe(z.number().int().positive());
+
+const configSchema = z.object({
+    server: z
+        .object({
+            requestTimeout: durationSchema,
+            shutdownTimeout: durationSchema,
+        })
+        .strict(),
+});
+
+type RuntimeConfig = z.infer<typeof configSchema>;
+// requestTimeout 和 shutdownTimeout 在输出中都是毫秒 number。
+```
+
+如果同时允许 TOML number 和 string，可用 union 明确单位，不能随意把 number 当秒或毫秒。整个应用只在 Loader 转换一次，后续变量命名为 requestTimeoutMs，避免再次转换。
+
+## 8.15 当前选型的条件校验
+
+```ts
+const databaseConfigSchema = z
+    .object({
+        driver: z.enum(["postgres", "mongodb"]),
+        postgresUrl: z.string().url().optional(),
+        mongodbUrl: z.string().url().optional(),
+    })
+    .strict()
+    .superRefine((value, context) => {
+        if (value.driver === "postgres" && !value.postgresUrl) {
+            context.addIssue({
+                code: "custom",
+                path: ["postgresUrl"],
+                message: "postgres driver requires APP_DATABASE_URL",
+            });
+        }
+        if (value.driver === "mongodb" && !value.mongodbUrl) {
+            context.addIssue({
+                code: "custom",
+                path: ["mongodbUrl"],
+                message: "mongodb driver requires APP_MONGODB_URL",
+            });
+        }
+    });
+```
+
+错误提示只包含变量名和配置路径，不包含 URL 值。生产环境还应对示例密码、弱 secret、0.0.0.0 暴露和 insecure cookie 做跨字段检查。
+
+## 8.16 常见配置错误与排查
+
+| 现象 | 常见原因 | 处理 |
+| --- | --- | --- |
+| 修改 TOML 没生效 | 后续 --config 覆盖或键名写错 | 查看脱敏来源摘要，开启 unknown key 拒绝 |
+| .env 没覆盖部署值 | 进程环境优先级更高 | 检查部署平台变量，不强行覆盖 process.env |
+| 数字变成字符串 | env 都是字符串 | 在 Zod 边界显式转换 |
+| false 被当成 true | 使用 Boolean("false") | 只接受明确 true/false 文本解析 |
+| 容器连不上数据库 | 使用了 127.0.0.1 | Compose 内使用服务名，宿主机使用 loopback |
+| 启动报 URL 但无法判断来源 | 打印了完整配置或没有来源信息 | 只记录来源和脱敏 host，不记录 userinfo |
+
 上一篇：[API 文档规范](03-api-documentation.md) | [返回总目录](../development-guide.md) | 下一篇：[PostgreSQL + Drizzle](05-postgresql-drizzle.md)

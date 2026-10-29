@@ -121,4 +121,168 @@ interface CalculateOrderResult {
 
 负载测试必须使用有界并发和生产近似数据，不把本机 loopback 结果直接当生产容量。优化后保留正确性和并发测试，防止只提升 benchmark。
 
+
+## 15.10 es-toolkit 安装与常用函数
+
+安装：
+
+```sh
+npm install es-toolkit
+```
+
+使用具名 ESM 导入：
+
+```ts
+import { chunk, groupBy, keyBy, uniqBy } from "es-toolkit";
+
+const batches = chunk(orderIds, 500);
+for (const batch of batches) {
+    await orderRepository.deleteBatch(batch);
+}
+
+const ordersByStatus = groupBy(orders, (order) => order.status);
+const ordersById = keyBy(orders, (order) => order.id);
+const uniqueSkus = uniqBy(items, (item) => item.sku);
+```
+
+- `chunk`：限制数据库批量和外部请求批量大小。
+- `groupBy`：按键分组，返回普通对象，注意键会转为对象属性。
+- `keyBy`：构建索引；重复 key 的覆盖规则要确认，不能当唯一性验证。
+- `uniqBy`：按规范化键去重；先明确大小写和 trim 规则。
+
+防抖与节流：
+
+```ts
+import { debounce, throttle } from "es-toolkit";
+
+const refresh = debounce(() => {
+    void refreshCache();
+}, 300);
+
+const report = throttle(() => {
+    void reportMetrics();
+}, 1000);
+
+// 组件/进程停止时按当前 API 取消或 flush，避免遗留 timer。
+refresh.cancel();
+report.cancel();
+```
+
+debounce/throttle 只控制调用频率，不自动提供异步串行、取消正在运行的 Promise 或持久任务语义。异步回调需显式处理 rejection 和 shutdown。
+
+深拷贝与合并：
+
+- `cloneDeep` 用于确实需要隔离嵌套数据的场景，不作为性能默认选择。
+- 配置加载不直接拿通用 merge 处理不可信来源，仍需防原型污染、数组替换和 Zod strict。
+- 领域对象构造、金额计算和权限逻辑不放入通用 es-toolkit 调用中隐藏。
+
+## 15.11 Tinypool 安装与完整 Worker 示例
+
+安装：
+
+```sh
+npm install tinypool
+```
+
+Worker 文件 `order-calculator.worker.ts`：
+
+```ts
+export interface CalculateOrderTask {
+    version: 1;
+    orderId: string;
+    items: readonly {
+        sku: string;
+        quantity: number;
+        unitPriceMinor: number;
+    }[];
+}
+
+export interface CalculateOrderResult {
+    orderId: string;
+    totalMinor: number;
+}
+
+export default function calculateOrder(
+    task: CalculateOrderTask,
+): CalculateOrderResult {
+    if (task.version !== 1) throw new Error("unsupported task version");
+
+    let totalMinor = 0;
+    for (const item of task.items) {
+        totalMinor += item.quantity * item.unitPriceMinor;
+    }
+    return { orderId: task.orderId, totalMinor };
+}
+```
+
+Worker 必须同步或异步返回可结构化克隆的结果，不 import Hono Context、Winston transports 或主线程数据库连接。示例只做计算，真实价格仍需以服务端事实数据为准。
+
+主线程：
+
+```ts
+import { fileURLToPath } from "node:url";
+import Tinypool from "tinypool";
+
+const pool = new Tinypool({
+    filename: fileURLToPath(
+        new URL("./order-calculator.worker.js", import.meta.url),
+    ),
+    minThreads: 0,
+    maxThreads: config.workers.maxThreads,
+    idleTimeout: 30_000,
+});
+
+const controller = new AbortController();
+const timeout = setTimeout(() => controller.abort(), 5000);
+try {
+    const result = await pool.run(
+        { version: 1, orderId, items },
+        { signal: controller.signal },
+    );
+    return result;
+} finally {
+    clearTimeout(timeout);
+}
+```
+
+关闭：
+
+```ts
+await pool.destroy();
+```
+
+`pool.destroy()` 前停止提交新任务，并决定正在运行任务等待还是取消。销毁也纳入总 shutdown timeout。
+
+## 15.12 Tinypool 开发/生产路径与并发控制
+
+前面的 `.js` URL 指向构建产物。tsx 开发环境需要项目自己的 Worker URL 解析策略，使源码 `.ts` 与 dist `.js` 各指向真实文件；不要用 `rewriteRelativeImportExtensions` 假设 new URL 字符串也会被改写。
+
+```ts
+interface WorkerPaths {
+    orderCalculator: string;
+}
+
+// 由 infrastructure 在开发和生产装配时分别提供真实绝对路径。
+const pool = new Tinypool({
+    filename: workerPaths.orderCalculator,
+    maxThreads: config.workers.maxThreads,
+});
+```
+
+提交任务前设置业务并发上限：
+
+- maxThreads 控制 Worker 数量，不等于等待队列有上限。
+- API 中间件或应用服务限制同时等待任务数，池满返回 429/503 或执行有界排队。
+- 每个任务限制输入数组、字节、计算时间和输出大小。
+- 超时只停止主线程等待不一定意味着所有 CPU 副作用立即消失，按 Tinypool 当前取消语义验证。
+- Worker 异常、任务超时和池重建记录 Winston 和指标。
+
+## 15.13 什么时候不要使用 Tinypool
+
+- 只是等待 PostgreSQL、MongoDB、Redis 或 HTTP：这是 I/O，不需要 Worker。
+- 任务很小且频率低：序列化和线程调度可能比直接计算更贵。
+- 需要崩溃后重新执行：使用持久队列，Tinypool 不提供。
+- 需要跨多台机器水平扩展：使用分布式 worker/queue。
+- 只是为了利用所有 CPU：先 profiling，Worker 过多会争用 CPU 和内存。
+
 上一篇：[安全与可观测性](10-security-observability.md) | [返回总目录](../development-guide.md) | 下一篇：[TypeScript 规范](12-typescript-conventions.md)
