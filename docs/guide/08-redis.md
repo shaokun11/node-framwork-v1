@@ -31,7 +31,7 @@
 
 ### 12.3 锁与后台任务
 
-分布式锁必须设置 TTL、唯一 owner token、原子释放和续约策略；锁过期后任务仍执行可能产生并发，因此关键写入还需数据库条件更新、幂等键或 fencing token。Tinypool 和 Redis 都不自动提供可靠任务语义；需要持久重试、调度和至少一次消费时，选择明确队列方案并设计幂等。
+分布式锁必须设置 TTL、唯一 owner token、原子释放和续约策略；锁过期后任务仍执行可能产生并发，因此关键写入还需数据库条件更新、幂等键或 fencing token。Tinypool 和 Redis 都不自动提供可靠任务语义；需要持久重试、调度和至少一次消费时，使用 [BullMQ](09-bullmq.md) 等明确队列方案并设计幂等。BullMQ 可选择 Redis 或 PostgreSQL 后端，不应把 Redis Pub/Sub 当作它的替代品。
 
 ## 12.4 原子限流设计
 
@@ -241,4 +241,4 @@ const messages = await redis.xReadGroup(
 - 多实例各用本地 Map 限流：不是全局限流，使用共享原子实现。
 - 把缓存数据库当永久事实源：Redis 持久化和驱逐策略不一定满足业务持久性。
 
-上一篇：[Keyv 缓存](07-keyv-cache.md) | [返回总目录](../development-guide.md) | 下一篇：[应用生命周期](09-application-lifecycle.md)
+上一篇：[Keyv 缓存](07-keyv-cache.md) | [返回总目录](../development-guide.md) | 下一篇：[BullMQ 持久任务队列](09-bullmq.md)

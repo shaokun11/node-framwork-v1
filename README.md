@@ -14,9 +14,12 @@
 - [TOML 与环境变量配置](docs/guide/04-configuration.md)
 - [PostgreSQL + Drizzle](docs/guide/05-postgresql-drizzle.md) / [MongoDB + Mongoose](docs/guide/06-mongodb-mongoose.md)
 - [Keyv 缓存](docs/guide/07-keyv-cache.md) / [Redis 原生能力](docs/guide/08-redis.md)
-- [Winston、生命周期与可观测性](docs/guide/10-security-observability.md)
-- [TypeScript 全 ESM 规范](docs/guide/12-typescript-conventions.md)
-- [Vitest 单元、集成、E2E 与 Smoke](docs/guide/13-testing.md)
-- [tsx、Docker Compose 与交付](docs/guide/14-development-delivery.md)
+- [BullMQ 持久任务队列（Redis / PostgreSQL）](docs/guide/09-bullmq.md)
+- [应用生命周期](docs/guide/10-application-lifecycle.md)
+- [Hono JWT、Casbin、Winston 与可观测性](docs/guide/11-security-observability.md)
+- [Croner、性能与 Tinypool](docs/guide/12-performance-workers.md)
+- [TypeScript、Day.js 与全 ESM 规范](docs/guide/13-typescript-conventions.md)
+- [Vitest 单元、集成、E2E 与 Smoke](docs/guide/14-testing.md)
+- [tsx、Docker Compose 与交付](docs/guide/15-development-delivery.md)
 
-技术约定包括 `"type": "module"`、`rewriteRelativeImportExtensions`、面向对象分层、构造函数注入、Zod 边界验证、es-toolkit 和 Tinypool。完整导航及阅读顺序见手册总目录。
+技术约定包括 `"type": "module"`、`rewriteRelativeImportExtensions`、面向对象分层、构造函数注入、Zod 边界验证、BullMQ、Croner、Day.js、Hono JWT/Casbin、es-toolkit 和 Tinypool。完整导航及阅读顺序见手册总目录。

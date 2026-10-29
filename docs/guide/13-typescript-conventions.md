@@ -1,8 +1,8 @@
 # TypeScript 与 ESM 编码规范
 
-## 16. TypeScript 编码与文档规范
+## 17. TypeScript 编码与文档规范
 
-### 16.1 类型和控制流
+### 17.1 类型和控制流
 
 - 开启 `strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes` 等严格选项，并处理由此暴露的真实问题。
 - 不使用非空断言 `!`、双重 cast 或 `any` 跳过验证；确需 `unknown` 后逐步缩窄。
@@ -13,7 +13,7 @@
 - 日期、ID、金额、时长和大小使用一致类型，不在层间隐式转换。
 - ESM 采用项目统一的 NodeNext 解析规则；源码相对导入使用 `.ts`，开启 rewriteRelativeImportExtensions，路径别名和生产输出必须在构建后验证。
 
-### 16.2 注释与文档
+### 17.2 注释与文档
 
 - 公共类、接口和复杂契约用英文 JSDoc/TSDoc 说明用途、参数、返回、抛出和所有权；中文手册解释团队规范。
 - 注释说明为什么和边界，不复述代码。TODO 必须有条件和跟踪，不留无所有者注释。
@@ -21,7 +21,7 @@
 - ADR 记录数据库、缓存、认证、任务和兼容发布等重要决策及替代方案。
 - 文档示例与实际选型保持同一主版本，升级时检查 import、配置项和行为差异。
 
-## 16.3 全面使用 ESM
+## 17.3 全面使用 ESM
 
 项目 `package.json` 必须声明：
 
@@ -38,7 +38,7 @@
 - CommonJS 第三方依赖按 Node.js 实际 interop 规则接入，不假定所有 named exports 都可用。
 - JSON、WASM 等特殊模块按 Node 版本要求使用 import attributes，不通过 fs 伪装模块导入。
 
-## 16.4 TypeScript 配置与相对扩展名
+## 17.4 TypeScript 配置与相对扩展名
 
 开启 `rewriteRelativeImportExtensions`。源码中的相对导入写真实 `.ts` 文件，构建时 TypeScript 将其改写为 `.js`：
 
@@ -82,7 +82,7 @@ import type { OrderRepository } from "./order.repository.ts";
 - 不依赖 tsconfig paths 在 Node 生产运行时自动解析；如使用 `#imports` 等 Node 支持机制，必须验证 tsx、Vitest 和 dist 行为一致。
 - 构建后检查 dist 不含 `.ts` 相对导入，并实际执行 `node dist/main.js`。
 
-## 16.5 异步、错误和资源清理
+## 17.5 异步、错误和资源清理
 
 ```ts
 async function run(signal: AbortSignal): Promise<void> {
@@ -100,7 +100,7 @@ async function run(signal: AbortSignal): Promise<void> {
 - 不在异步循环中无意识地串行执行独立任务，也不为追求并行破坏数据库事务顺序。
 - 自定义 Error 的 code、公开/内部边界和 cause 明确，instanceof 跨 realm 不可靠时使用稳定判别字段。
 
-## 16.6 TypeScript 提交检查
+## 17.6 TypeScript 提交检查
 
 - [ ] package.json 包含 type=module，没有新增 CommonJS 文件。
 - [ ] 相对导入统一 `.ts`，构建后已改写 `.js`。
@@ -109,7 +109,7 @@ async function run(signal: AbortSignal): Promise<void> {
 - [ ] dist 入口、Worker、动态 import 和资源路径经过真实启动验证。
 
 
-## 16.7 TypeScript 开发到运行完整流程
+## 17.7 TypeScript 开发到运行完整流程
 
 安装：
 
@@ -179,7 +179,7 @@ npm start
 
 如果 build 后仍看到运行时找不到 `.ts`，检查是否遗漏 rewriteRelativeImportExtensions、是否运行了正确 tsconfig、是否把 TS 源码路径写进普通字符串，以及 Docker 是否复制了旧 dist。
 
-## 16.8 tsconfig.build.json 继承方式
+## 17.8 tsconfig.build.json 继承方式
 
 ```json
 {
@@ -197,4 +197,55 @@ npm start
 
 基础 tsconfig 可设置 noEmit=true 供编辑器/typecheck，build override 为 false。测试和 Vitest 配置使用自己的 include，避免 rootDir 错误和测试代码进入生产 dist。
 
-上一篇：[性能与 Tinypool](11-performance-workers.md) | [返回总目录](../development-guide.md) | 下一篇：[Vitest 测试](13-testing.md)
+## 17.9 Day.js 日期与时间
+
+[Day.js](https://day.js.org/docs/en/installation/installation) 用于日期时间的解析、计算、比较和格式化。它保持不可变 API：`add()`、`subtract()`、`tz()` 等返回新实例，不修改原对象。核心很小，但 UTC、timezone、duration、customParseFormat 等能力必须显式加载对应插件。
+
+```sh
+npm install dayjs
+```
+
+在统一的 `infrastructure/time/dayjs.ts` 初始化插件并导出，不在每个请求中重复 `extend`：
+
+```ts
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc.js";
+import timezone from "dayjs/plugin/timezone.js";
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
+
+export { dayjs };
+```
+
+把带本地时区的输入转换为 Instant 存储，再在展示边界转换：
+
+```ts
+import { dayjs } from "./dayjs.js";
+
+// 用户输入是 Asia/Shanghai 的本地时间，不是服务器本地时间。
+const occurredAt = dayjs
+    .tz("2026-10-29T09:30:00", "Asia/Shanghai")
+    .utc()
+    .toISOString();
+
+const shanghaiDisplay = dayjs(occurredAt)
+    .tz("Asia/Shanghai")
+    .format("YYYY-MM-DD HH:mm:ss Z");
+
+const expiresAt = dayjs(occurredAt).add(30, "minute");
+const isExpired = expiresAt.isBefore(dayjs());
+```
+
+项目统一约定：
+
+- 数据库存 Instant：PostgreSQL 使用 `timestamptz`，MongoDB 使用 Date；API 默认输出带 offset 的 ISO 8601 字符串。不要把已经格式化的本地展示字符串当事实数据。
+- “2026-10-29”这种纯日期是日历日期，不是 Instant。生日、账期等使用 date/字符串语义，不随意 `utc()` 导致跨日。
+- 没有 offset 的日期时间必须结合明确的用户/租户 IANA timezone 解析，并定义 DST 不存在或重复时间的校验策略；不能依赖服务器 `TZ`。
+- `dayjs.tz.setDefault()` 会影响共享配置，非必要不使用。即使设置默认值，`dayjs(value)` 与 `dayjs.tz(value)` 的语义也不完全相同，解析处显式传 timezone。
+- 需要非标准输入格式时加载 `customParseFormat` 并严格校验 `isValid()`；不要依赖 JavaScript Date 对任意字符串的宽松解析。
+- 时间比较使用时间库方法或 epoch，不比较格式化字符串。金额式精度问题不适用于时间，但数据库精度、毫秒截断和舍入边界要有测试。
+- 当前时间通过应用 `Clock` 接口注入，测试固定 clock/timezone；不要在领域规则中散落不可控的 `dayjs()`。
+- 只加载实际使用的插件和 locale。原生 `Intl.DateTimeFormat` 已满足简单展示时不必额外引入 locale。
+
+上一篇：[性能与 Tinypool](12-performance-workers.md) | [返回总目录](../development-guide.md) | 下一篇：[Vitest 测试](14-testing.md)

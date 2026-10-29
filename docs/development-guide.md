@@ -16,8 +16,10 @@
 | 主数据库 | PostgreSQL + Drizzle ORM 或 MongoDB + Mongoose，明确选型 |
 | 缓存抽象 | Keyv，显式选择一个 Adapter |
 | Redis | 需要原子操作、限流、锁、Pub/Sub、Stream 时独立使用官方客户端 |
+| 定时与持久任务 | 轻量进程内调度使用 Croner；持久重试使用 BullMQ，选择 Redis 或 PostgreSQL 后端 |
+| 认证与授权 | 简单 JWT/固定角色使用 Hono JWT；复杂 RBAC/ABAC 使用 Casbin |
 | 日志 | Winston，统一结构化 format、脱敏、transport 和关闭 |
-| 通用工具 | 标准库与 es-toolkit |
+| 通用工具 | 标准库、Day.js 与 es-toolkit |
 | CPU 并行 | 有明确 CPU 密集任务时使用 Tinypool |
 | 测试与质量 | Vitest 单元/集成/E2E/Smoke，ESLint、Prettier、TypeScript |
 | 开发依赖环境 | Docker Compose profiles，按数据库和 Redis 选型启动 |
@@ -39,14 +41,15 @@
 | 06 | [MongoDB + Mongoose](guide/06-mongodb-mongoose.md) | Schema/Model、文档设计、验证、Session、索引、文档迁移 |
 | 07 | [Keyv 缓存与 Adapter](guide/07-keyv-cache.md) | Adapter 选择、TTL、namespace、序列化、Cache-Aside、失效和契约 |
 | 08 | [Redis 原生能力](guide/08-redis.md) | 独立客户端、原子限流、锁、Pub/Sub、Stream、可靠性和容量 |
-| 09 | [依赖装配与生命周期](guide/09-application-lifecycle.md) | Composition Root、启动失败清理、请求取消、优雅退出 |
-| 10 | [安全、Winston 日志与可观测性](guide/10-security-observability.md) | 安全基线、日志脱敏、健康检查、指标和追踪 |
-| 11 | [多实例、性能与 Tinypool](guide/11-performance-workers.md) | 水平扩展、Worker Threads、es-toolkit、性能测量 |
-| 12 | [TypeScript 与 ESM 规范](guide/12-typescript-conventions.md) | `type=module`、扩展名改写、严格类型、异步和模块解析 |
-| 13 | [Vitest 测试策略](guide/13-testing.md) | 单元、集成、E2E、Smoke、真实依赖、并发与生命周期测试 |
-| 14 | [开发、Compose、构建与交付](guide/14-development-delivery.md) | tsx、Docker Compose、npm scripts、Docker、CI 和发布 |
-| 15 | [新项目裁剪与验收](guide/15-adoption-acceptance.md) | 采用步骤、完整验收清单、ADR 和交付证据 |
-| 16 | [官方资料](guide/16-references.md) | 全部技术的官方文档入口和版本使用规则 |
+| 09 | [BullMQ 持久任务队列](guide/09-bullmq.md) | Redis/PostgreSQL 后端、Queue/Worker、迁移、重试、幂等与关闭 |
+| 10 | [依赖装配与生命周期](guide/10-application-lifecycle.md) | Composition Root、启动失败清理、请求取消、优雅退出 |
+| 11 | [安全、JWT/Casbin、Winston 与可观测性](guide/11-security-observability.md) | 安全基线、日志脱敏、健康检查、指标和追踪 |
+| 12 | [多实例、Croner、性能与 Tinypool](guide/12-performance-workers.md) | 定时调度、水平扩展、Worker Threads、es-toolkit、性能测量 |
+| 13 | [TypeScript、Day.js 与 ESM 规范](guide/13-typescript-conventions.md) | `type=module`、日期时间、扩展名改写、严格类型、异步和模块解析 |
+| 14 | [Vitest 测试策略](guide/14-testing.md) | 单元、集成、E2E、Smoke、真实依赖、并发与生命周期测试 |
+| 15 | [开发、Compose、构建与交付](guide/15-development-delivery.md) | tsx、Docker Compose、npm scripts、Docker、CI 和发布 |
+| 16 | [新项目裁剪与验收](guide/16-adoption-acceptance.md) | 采用步骤、完整验收清单、ADR 和交付证据 |
+| 17 | [官方资料](guide/17-references.md) | 全部技术的官方文档入口和版本使用规则 |
 
 ## 2.1 实战使用示例索引
 
@@ -59,30 +62,34 @@
 | Mongoose / MongoDB | [连接与 Model](guide/06-mongodb-mongoose.md#1011-mongoose-安装连接与-model) | [CRUD](guide/06-mongodb-mongoose.md#1012-mongoose-crud-使用)、[事务](guide/06-mongodb-mongoose.md#1014-mongoose-多文档事务使用) |
 | Keyv | [内存与 API](guide/07-keyv-cache.md#1110-keyv-安装与内存用法) | [Redis Adapter](guide/07-keyv-cache.md#1111-使用-redis-adapter)、[Cache-Aside](guide/07-keyv-cache.md#1113-实现类型安全的-cache-aside) |
 | Redis | [客户端与数据结构](guide/08-redis.md#128-redis-客户端安装与基础命令) | [Lua](guide/08-redis.md#129-原子计数过期与-lua)、[锁与 Stream](guide/08-redis.md#1210-分布式锁的具体实现) |
-| Winston | [开发/生产 Logger](guide/10-security-observability.md#149-winston-安装与开发生产配置) | [Error、transport 与关闭](guide/10-security-observability.md#1411-正确记录-error-和-cause) |
-| es-toolkit | [安装与常用函数](guide/11-performance-workers.md#1510-es-toolkit-安装与常用函数) | 批量、去重、debounce/throttle |
-| Tinypool | [完整 Worker 示例](guide/11-performance-workers.md#1511-tinypool-安装与完整-worker-示例) | [路径与并发控制](guide/11-performance-workers.md#1512-tinypool-开发生产路径与并发控制) |
-| Vitest | [安装与配置](guide/13-testing.md#1711-vitest-安装与配置文件) | [mock](guide/13-testing.md#1712-vitest-mockfake-timer-与清理)、[E2E/Smoke](guide/13-testing.md#1714-e2e-测试辅助进程封装) |
-| TypeScript / tsx | [开发到构建运行](guide/12-typescript-conventions.md#167-typescript-开发到运行完整流程) | [tsx 使用](guide/14-development-delivery.md#189-tsx-安装与实际使用) |
-| Prettier / ESLint | [Prettier](guide/14-development-delivery.md#1810-prettier-安装与格式化) | [ESLint flat config](guide/14-development-delivery.md#1811-eslint-安装与类型感知规则) |
-| Docker Compose | [开发环境完整示例](guide/14-development-delivery.md#186-docker-compose-开发环境) | profiles、健康检查、测试隔离 |
+| BullMQ | [Redis Quick Start](guide/09-bullmq.md#134-redis-quick-start生产者与-worker) | [PostgreSQL 后端](guide/09-bullmq.md#135-postgresql-quick-start迁移生产者与-worker)、[幂等与关闭](guide/09-bullmq.md#136-重试幂等与失败处理) |
+| Croner | [安装、时区与优雅关闭](guide/12-performance-workers.md#1614-croner-进程内定时任务) | 多实例、防重和持久化边界 |
+| Day.js | [安装、UTC 与时区](guide/13-typescript-conventions.md#179-dayjs-日期与时间) | 不可变 API、插件和 Instant/日历日期 |
+| Hono JWT / Casbin | [简单 JWT 与固定角色](guide/11-security-observability.md#1521-简单场景hono-jwt) | [复杂 RBAC/ABAC 与 Casbin](guide/11-security-observability.md#1522-复杂场景casbin) |
+| Winston | [开发/生产 Logger](guide/11-security-observability.md#159-winston-安装与开发生产配置) | [Error、transport 与关闭](guide/11-security-observability.md#1511-正确记录-error-和-cause) |
+| es-toolkit | [安装与常用函数](guide/12-performance-workers.md#1610-es-toolkit-安装与常用函数) | 批量、去重、debounce/throttle |
+| Tinypool | [完整 Worker 示例](guide/12-performance-workers.md#1611-tinypool-安装与完整-worker-示例) | [路径与并发控制](guide/12-performance-workers.md#1612-tinypool-开发生产路径与并发控制) |
+| Vitest | [安装与配置](guide/14-testing.md#1811-vitest-安装与配置文件) | [mock](guide/14-testing.md#1812-vitest-mockfake-timer-与清理)、[E2E/Smoke](guide/14-testing.md#1814-e2e-测试辅助进程封装) |
+| TypeScript / tsx | [开发到构建运行](guide/13-typescript-conventions.md#177-typescript-开发到运行完整流程) | [tsx 使用](guide/15-development-delivery.md#199-tsx-安装与实际使用) |
+| Prettier / ESLint | [Prettier](guide/15-development-delivery.md#1910-prettier-安装与格式化) | [ESLint flat config](guide/15-development-delivery.md#1911-eslint-安装与类型感知规则) |
+| Docker Compose | [开发环境完整示例](guide/15-development-delivery.md#196-docker-compose-开发环境) | profiles、健康检查、测试隔离 |
 ## 3. 推荐阅读路径
 
 ### 3.1 从零建立项目
 
-按 `01  02  03  04  05 或 06  09  13  14  15` 阅读。先跑通一个真实业务链路，再增加缓存、Redis、Worker 等可选能力。
+按 `01  02  03  04  05 或 06  10  14  15  16` 阅读。先跑通一个真实业务链路，再增加缓存、Redis、Worker 等可选能力。
 
 ### 3.2 开发普通业务模块
 
-阅读 `01  02  当前数据库专题  13`。修改 API 契约时同步维护 `03` 所要求的 api.md；涉及缓存时增加 `07`，涉及 Redis 原子操作时增加 `08`。
+阅读 `01  02  当前数据库专题  14`。修改 API 契约时同步维护 `03` 所要求的 api.md；涉及缓存时增加 `07`，涉及 Redis 原子操作时增加 `08`，涉及持久任务时增加 `09`。
 
 ### 3.3 修改配置或部署
 
-阅读 `04  09  10  12  14  15`。任何新配置都必须同步示例、schema、优先级测试和部署文档。
+阅读 `04  09  10  11  13  15  16`。任何新配置都必须同步示例、schema、优先级测试和部署文档。
 
 ### 3.4 排查性能或稳定性
 
-阅读 `09  10  11  13`。先通过 Winston 日志、指标和 profiling 定位，再决定缓存、连接池、Worker 或数据库优化。
+阅读 `09  10  11  12  14`。先通过 Winston 日志、指标和 profiling 定位，再决定缓存、连接池、Worker 或数据库优化。
 
 ## 4. 公共协议与规范等级
 

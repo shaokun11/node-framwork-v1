@@ -115,7 +115,7 @@ const orderQuerySchema = z
 
 ## 7.7 认证、权限与多租户
 
-建议将过程拆为：
+简单 JWT 和固定角色使用 Hono JWT；复杂 RBAC/ABAC 可按需引入 Casbin，具体接入见[认证授权专题](11-security-observability.md)。无论采用哪种方式，都将过程拆为：
 
 1. AuthenticationMiddleware 验证凭证并建立 principal。
 2. AuthorizationPolicy 判断 principal 能否执行动作。
@@ -194,7 +194,7 @@ process.once("SIGTERM", () => {
 });
 ```
 
-真实项目不要在模块顶层创建 app 和连接。由 Composition Root 创建 `app`，再把 `app.fetch` 交给 Node adapter；关闭流程见[生命周期专题](09-application-lifecycle.md)。
+真实项目不要在模块顶层创建 app 和连接。由 Composition Root 创建 `app`，再把 `app.fetch` 交给 Node adapter；关闭流程见[生命周期专题](10-application-lifecycle.md)。
 
 ## 7.12 Hono 路由与 Context 常用 API
 

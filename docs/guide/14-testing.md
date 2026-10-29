@@ -1,8 +1,8 @@
 # Vitest 测试策略与工程检查
 
-## 17. 测试与工程检查
+## 18. 测试与工程检查
 
-### 17.1 测试分层
+### 18.1 测试分层
 
 | 层级 | 主要目标 | 依赖方式 |
 | --- | --- | --- |
@@ -10,13 +10,14 @@
 | Repository 契约 | CRUD、唯一约束、事务、并发、映射 | 当前选型的真实 PostgreSQL 或 MongoDB |
 | Adapter 契约 | Keyv TTL、namespace、clear、序列化、错误 | 每个实际启用的 Keyv Adapter |
 | Redis 集成 | Lua 原子性、TTL、锁所有权、Stream ACK | 真实 Redis，必要时 Cluster |
+| BullMQ 集成 | 入队/消费、重试、重复投递、迁移、关闭 | 实际选择的 Redis 或 PostgreSQL 后端 |
 | HTTP 集成 | 中间件、Zod、权限、状态码、响应 envelope | `app.request()` + 可控业务依赖 |
 | E2E | 真实进程、配置、迁移、健康检查、完整链路 | 编译产物和真实依赖 |
 | 生命周期 | 启动失败清理、信号、请求排空、关闭超时 | 独立进程与信号测试 |
 
-单元测试通过不等于数据库行为正确。不要用 mock 验证 SQL、Mongoose 查询或 Redis 原子性，也不要让所有测试共享一个无隔离数据库。
+单元测试通过不等于数据库或队列行为正确。不要用 mock 验证 SQL、Mongoose 查询、Redis 原子性或 BullMQ 真实重试/迁移语义，也不要让所有测试共享一个无隔离数据库或队列。
 
-### 17.2 必测行为
+### 18.2 必测行为
 
 每个业务写接口至少覆盖：
 
@@ -24,12 +25,15 @@
 - 不存在、重复、状态冲突和并发更新。
 - 幂等重复、相同 key 不同请求体、并发首次请求。
 - 事务中途失败后的回滚和可重试性。
-- 下游超时、缓存不可用、Redis 不可用时的明确降级策略。
+- 下游超时、缓存不可用、Redis/队列后端不可用时的明确降级策略。
+- JWT 非法/过期、角色允许/拒绝、Casbin 策略边界、跨租户和授权故障 fail-closed。
+- BullMQ 重复投递幂等、最终失败、Worker 重启恢复和优雅关闭。
+- Croner 时区/DST、防重、多实例协调、错过执行和关闭；Day.js 解析、UTC 转换、纯日期和 DST 边界。
 - 多实例共享身份、配额和事实数据，不依赖本地进程状态。
 
 配置加载必须独立覆盖第 8.5 节列出的优先级和非法输入。数据库测试验证真实约束、事务、索引假设和迁移升级；MongoDB 事务测试使用支持事务的拓扑。
 
-### 17.3 隔离与确定性
+### 18.3 隔离与确定性
 
 - 使用 Testcontainers 或受控 Compose 启动真实依赖，测试后清理。
 - 每个测试套件使用独立 database/keyspace/collection/namespace；禁止随机清理开发者数据库。
@@ -39,7 +43,7 @@
 - 网络测试限制总耗时，失败时保留必要日志但不泄密。
 - snapshot 适合稳定协议，不代替关键字段和失败行为断言。
 
-### 17.4 工程检查
+### 18.4 工程检查
 
 ```sh
 npm run format:check
@@ -55,7 +59,7 @@ npm run build
 - 测试覆盖率用于发现未测分支，不设一个数字代替关键行为验收。
 - PR 必须说明验证范围；未运行的集成/E2E 测试明确列出，不能写成全部通过。
 
-## 17.5 Vitest 项目组织
+## 18.5 Vitest 项目组织
 
 所有测试统一使用 Vitest，不混用 Jest、node:test 或另一套断言/mock 体系。按依赖和运行成本拆分配置：
 
@@ -84,7 +88,7 @@ test/smoke/**/*.smoke.test.ts     # 最小发布探活
 
 `npm test` 默认快速单元测试；CI 和交付流程显式运行 integration、e2e 和 smoke。不要让 `npm test` 暗中依赖开发者本机数据库。
 
-## 17.6 Vitest 单元测试
+## 18.6 Vitest 单元测试
 
 - 使用 `describe`/`it`/`expect` 表达行为和边界，不逐行镜像实现。
 - 使用 `vi.fn()`、`vi.spyOn()` 验证必要的 collaborator 交互，但优先断言输出和状态。
@@ -107,7 +111,7 @@ describe("OrderService", () => {
 
 并发数据库冲突不能靠 InMemoryRepository 单线程行为证明，必须放到真实集成测试。
 
-## 17.7 Vitest HTTP 集成测试
+## 18.7 Vitest HTTP 集成测试
 
 路由/中间件测试通过 `app.request()` 调用 Hono，无需监听端口：
 
@@ -124,7 +128,7 @@ await expect(response.json()).resolves.toMatchObject({ data: { status: "pending"
 
 测试覆盖 Zod 错误 envelope、CORS、认证、权限、body limit 和集中错误映射。Repository 集成测试则使用真实数据库，两者不要混成难以定位的大测试。
 
-## 17.8 Vitest E2E 测试
+## 18.8 Vitest E2E 测试
 
 E2E 验证真实应用进程、真实配置和当前选型基础设施：
 
@@ -137,7 +141,7 @@ E2E 验证真实应用进程、真实配置和当前选型基础设施：
 
 E2E 可以用 Vitest globalSetup 管理环境，也可以由脚本先启动 Compose；无论哪种方式都要避免并行套件删除彼此数据。
 
-## 17.9 Vitest Smoke 测试
+## 18.9 Vitest Smoke 测试
 
 Smoke 是最小、快速、面向发布产物的能否运行验证，不重复完整 E2E：
 
@@ -163,7 +167,7 @@ describe("production smoke", () => {
 
 Smoke 测试数据独立且可清理。部署后对远端环境执行 smoke 时，只使用专用测试账号/资源，不能随意创建生产业务数据。
 
-## 17.10 Vitest 验收清单
+## 18.10 Vitest 验收清单
 
 - [ ] test:unit 无需外部服务且可重复运行。
 - [ ] test:integration 使用真实当前数据库、Keyv Adapter 和 Redis。
@@ -173,7 +177,7 @@ Smoke 测试数据独立且可清理。部署后对远端环境执行 smoke 时�
 - [ ] 测试失败输出不包含秘密，清理逻辑不会删除非测试资源。
 
 
-## 17.11 Vitest 安装与配置文件
+## 18.11 Vitest 安装与配置文件
 
 安装：
 
@@ -223,7 +227,7 @@ export default defineConfig({
 
 Smoke 使用独立 include `test/smoke/**/*.smoke.test.ts`，不要复用单元配置。E2E/Smoke 的 maxWorkers 是否需要 1 取决于资源隔离；共享 Compose database 时默认串行更安全。
 
-## 17.12 Vitest mock、fake timer 与清理
+## 18.12 Vitest mock、fake timer 与清理
 
 构造依赖 fake：
 
@@ -264,7 +268,7 @@ describe("debounced task", () => {
 
 异步资源用 afterEach/afterAll 关闭。`restoreMocks` 不能替代 Pool、Worker、数据库和进程清理。
 
-## 17.13 Vitest 全局 setup/teardown
+## 18.13 Vitest 全局 setup/teardown
 
 `test/e2e/global-setup.ts` 示例职责：
 
@@ -284,7 +288,7 @@ export default async function setup() {
 
 如果应用进程在 globalSetup 启动，返回 teardown 必须发送 SIGTERM 并等待退出。若 Vitest worker 异常退出，也应有超时清理和独立 Compose project 便于回收。
 
-## 17.14 E2E 测试辅助进程封装
+## 18.14 E2E 测试辅助进程封装
 
 ```ts
 export class TestApplication {
@@ -321,7 +325,7 @@ async function startBuiltApplication(): Promise<TestApplication> {
 
 进程 stdout/stderr 应收集到内存或有界临时文件，仅在失败时输出并脱敏。waitForReady 必须有总超时和子进程提前退出分支。
 
-## 17.15 Smoke 测试具体命令与发布位置
+## 18.15 Smoke 测试具体命令与发布位置
 
 本地构建产物：
 
@@ -343,7 +347,7 @@ CI 推荐顺序：unit  build  integration/e2e  built smoke  image smoke。部�
 
 Smoke 失败应阻止发布或触发回滚流程，但不能自动对未知环境执行数据库清理。
 
-## 17.16 Vitest 常见误用
+## 18.16 Vitest 常见误用
 
 - 只 mock 数据库就声称事务正确：必须用真实数据库集成测试。
 - 所有测试都叫 e2e：按依赖和目的拆分 unit/integration/e2e/smoke。
@@ -353,4 +357,4 @@ Smoke 失败应阻止发布或触发回滚流程，但不能自动对未知环�
 - 覆盖率高但缺少并发/权限/失败测试：覆盖率不能替代行为验收。
 - Smoke 只检查进程存在：至少检查 ready、一个核心路由和优雅退出。
 
-上一篇：[TypeScript 规范](12-typescript-conventions.md) | [返回总目录](../development-guide.md) | 下一篇：[开发与交付](14-development-delivery.md)
+上一篇：[TypeScript 规范](13-typescript-conventions.md) | [返回总目录](../development-guide.md) | 下一篇：[开发与交付](15-development-delivery.md)
