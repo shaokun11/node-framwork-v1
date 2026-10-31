@@ -4,9 +4,10 @@
 
 ### 14.1 Composition Root
 
-只有 `main.ts` 负责触发进程启动：
+每个进程只由自己的入口文件触发启动。API 使用 `main.ts`，`migrate`、`scheduler` 和 `worker` 使用各自入口，普通模块不能在 import 时启动进程：
 
 ```ts
+// src/main.ts：API 进程入口。
 const application = await Application.create();
 await application.start();
 ```

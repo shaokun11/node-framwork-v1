@@ -42,10 +42,20 @@
 
 采用一个应用包、按进程职责拆分入口、按业务模块组织代码、模块内按职责分层的 monolith 起点：
 
-- `api`：长期运行的 HTTP 服务。
-- `migrate`：数据库结构迁移，独立执行并退出。
-- `worker`：确有持久后台任务时增加，不把 API 进程当任务队列。
-- `script`：一次性维护命令，必须与正常请求共用业务约束。
+| 进程 | 入口 | 职责 |
+| --- | --- | --- |
+| `api` | `src/main.ts` | 长期运行的 HTTP 服务 |
+| `migrate` | `src/migrate.ts`，或所选数据库工具的 CLI | 执行数据库结构/数据迁移，完成后独立退出 |
+| `scheduler` | `src/scheduler.ts` | 按需运行 Croner 轻量定时调度，不监听 HTTP 端口 |
+| `worker` | `src/worker.ts` | 确有持久后台任务时增加，不把 API 进程当任务队列 |
+| `script` | `scripts/` 下的一次性入口 | 执行维护命令，必须与正常请求共用业务约束 |
+
+各入口只调用自己的 composition root，复用配置和业务模块装配，不在被 import 时产生启动副作用，也不通过 import `main.ts` 复用另一进程：
+
+- `migrate` 只装配配置、日志、数据库连接和迁移器，在 `finally` 中关闭资源；成功退出码为 `0`，失败为非 `0`，不启动 HTTP 或定时任务。PostgreSQL 可以让 `db:migrate` 直接封装 `drizzle-kit migrate`；需要程序化迁移或 MongoDB 版本化数据迁移时再使用 `src/migrate.ts`。
+- `scheduler` 只注册定时任务并管理其生命周期，收到退出信号后停止后续触发、等待当前任务结束再关闭资源。多副本部署时只运行一个 scheduler，或使用数据库租约等协调机制；需要持久化、重试和崩溃恢复的任务交给 BullMQ `worker`。
+
+开发环境分别用 `tsx src/main.ts`、`tsx src/migrate.ts`、`tsx src/scheduler.ts` 启动，生产环境分别运行 `node dist/main.js`、`node dist/migrate.js`、`node dist/scheduler.js`，并通过 `start`、`db:migrate`、`scheduler` 等 package scripts 固定命令。使用数据库工具 CLI 的迁移不需要额外创建一个空的 `src/migrate.ts`。
 
 业务增加不自动意味着拆微服务。先保持模块边界、数据所有权和资源生命周期清晰。
 
@@ -82,9 +92,12 @@ Controller 可以依赖 Service 接口；Service 不 import Hono。Repository �
 ```text
 .
  src/
-    main.ts                       # 唯一进程启动副作用入口
+    main.ts                       # API 进程入口
+    migrate.ts                    # 可选：程序化迁移进程入口
+    scheduler.ts                  # 可选：Croner 调度进程入口
+    worker.ts                     # 可选：持久任务 Worker 进程入口
     bootstrap/
-       application.ts            # 创建、启动、关闭整个应用
+       application.ts            # 创建、启动、关闭 API 应用
        container.ts              # 显式装配，不提供全局 get
        modules/                  # 各模块装配函数
     config/
