@@ -21,5 +21,7 @@
 - [TypeScript、Day.js 与全 ESM 规范](docs/guide/13-typescript-conventions.md)
 - [Vitest 单元、集成、E2E 与 Smoke](docs/guide/14-testing.md)
 - [tsx、Docker Compose 与交付](docs/guide/15-development-delivery.md)
+- [新项目裁剪与验收](docs/guide/16-adoption-acceptance.md)
+- [官方资料与版本参考](docs/guide/17-references.md)
 
 技术约定包括 `"type": "module"`、`rewriteRelativeImportExtensions`、面向对象分层、构造函数注入、Zod 边界验证、BullMQ、Croner、Day.js、Hono JWT/Casbin、es-toolkit 和 Tinypool。完整导航及阅读顺序见手册总目录。

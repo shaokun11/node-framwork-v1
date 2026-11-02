@@ -118,7 +118,6 @@ export const emailQueue = new Queue<WelcomeEmailJobData>("email", {
     defaultJobOptions: {
         attempts: 3,
         backoff: { type: "exponential", delay: 1000 },
-        timeout: 30_000,
         removeOnComplete: { age: 3600, count: 1000 },
         removeOnFail: { age: 7 * 24 * 3600 },
     },
@@ -130,7 +129,13 @@ export const emailWorker = new Worker<WelcomeEmailJobData>(
         if (job.data.version !== 1) {
             throw new Error("unsupported welcome email job version");
         }
-        await emailService.sendWelcome(job.data.userId);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 30_000);
+        try {
+            await emailService.sendWelcome(job.data.userId, { signal: controller.signal });
+        } finally {
+            clearTimeout(timer);
+        }
     },
     { connection: workerConnection, concurrency: config.queue.concurrency },
 );
@@ -157,6 +162,7 @@ export async function closeEmailQueue(): Promise<void> {
 - Worker 所需 `maxRetriesPerRequest: null` 不能机械复制到所有 Redis 用途。普通 Redis client 和生产者的重试上限按各自可靠性策略配置。
 - 示例分别持有生产与 Worker 连接，便于说明所有权。若按官方连接复用能力共享 client，也必须验证阻塞连接和各角色选项，关闭责任仍由创建者承担。
 - `concurrency` 是单 Worker 的并发，不等于全系统吞吐承诺。总并发要受邮件商、数据库和下游限流约束。
+- BullMQ 不会通过 job option 自动终止超时任务。示例要求 `emailService.sendWelcome` 将 `signal` 传给支持取消的下游操作，并在取消时抛错；不支持取消的操作不会因此停止。超时错误会按 `attempts` 重试，邮件发送必须具备幂等性，避免重复发送。
 
 ## 13.5 PostgreSQL Quick Start：迁移、生产者与 Worker
 
