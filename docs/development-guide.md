@@ -12,6 +12,7 @@
 | 模块模式 | `package.json` 使用 `type=module`，开启 `rewriteRelativeImportExtensions` |
 | HTTP | Hono + `@hono/node-server` |
 | 开发执行 | `tsx watch`；生产运行 `tsc` 构建后的 JavaScript |
+| 命令行 | 按需使用 oclif 构建独立管理命令 |
 | 配置 | smol-toml + TOML + dotenv + 进程环境变量 + Zod 最终校验 |
 | 主数据库 | PostgreSQL + Drizzle ORM 或 MongoDB + Mongoose，明确选型 |
 | 缓存抽象 | Keyv，显式选择一个 Adapter |
@@ -71,6 +72,7 @@
 | Tinypool | [完整 Worker 示例](guide/12-performance-workers.md#1611-tinypool-安装与完整-worker-示例) | [路径与并发控制](guide/12-performance-workers.md#1612-tinypool-开发生产路径与并发控制) |
 | Vitest | [安装与配置](guide/14-testing.md#1811-vitest-安装与配置文件) | [mock](guide/14-testing.md#1812-vitest-mockfake-timer-与清理)、[E2E/Smoke](guide/14-testing.md#1814-e2e-测试辅助进程封装) |
 | TypeScript / tsx | [开发到构建运行](guide/13-typescript-conventions.md#177-typescript-开发到运行完整流程) | [tsx 使用](guide/15-development-delivery.md#199-tsx-安装与实际使用) |
+| oclif | [命令行工具上手](guide/15-development-delivery.md#1913-oclif-命令行工具) | 参数、配置、资源关闭与测试 |
 | Prettier / ESLint | [Prettier](guide/15-development-delivery.md#1910-prettier-安装与格式化) | [ESLint flat config](guide/15-development-delivery.md#1911-eslint-安装与类型感知规则) |
 | Docker Compose | [开发环境完整示例](guide/15-development-delivery.md#196-docker-compose-开发环境) | profiles、健康检查、测试隔离 |
 ## 3. 推荐阅读路径

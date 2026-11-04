@@ -16,6 +16,7 @@
 - [Casbin Get Started](https://casbin.apache.org/docs/get-started/)
 - [Zod 文档](https://zod.dev/)
 - [tsx 文档](https://tsx.is/)
+- [oclif Introduction](https://oclif.io/docs/introduction/)
 - [es-toolkit 中文介绍](https://es-toolkit.dev/zh_hans/intro.html)
 - [Tinypool](https://github.com/tinylibs/tinypool)
 - [Croner](https://github.com/hexagon/croner)

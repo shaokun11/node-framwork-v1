@@ -359,4 +359,61 @@ npm ci
 - 不提交 node_modules、dist、coverage、.env 和 runtime logs。
 - 生产 Docker 使用 npm ci，构建后裁剪开发依赖并运行 Smoke。
 
+## 19.13 oclif 命令行工具
+
+需要维护多个运维或管理命令时，可按需使用 [oclif](https://oclif.io/docs/introduction/)；普通 API 启动和简单脚本不要求引入。命令是独立进程入口，复用应用 Service 和配置加载器，不通过导入 `main.ts` 启动 HTTP 服务。
+
+先使用受支持的 Node.js LTS 版本，全局安装 oclif 生成器：
+
+```sh
+npm install --global oclif
+oclif --version
+oclif --help
+```
+
+安装后可在终端直接运行 `oclif`。如果提示找不到命令，检查 `npm prefix -g` 对应的全局可执行目录是否在 PATH 中（Windows 通常是该前缀目录，macOS/Linux 通常是其 `bin` 子目录），然后重新打开终端。团队应记录并统一生成器版本，例如使用 `npm install --global oclif@<版本号>`；项目的 lockfile 不会锁定全局工具。
+
+新建 CLI 时运行 `oclif generate mycli`，然后进入 `mycli` 目录；已有项目在项目根目录运行 `oclif init`。按交互提示选择 ESM 和项目使用的包管理器。初始化会修改项目配置、依赖和入口文件，执行前检查现有配置，执行后审查 diff。全局的 `oclif` 是开发生成器；项目运行时仍需要本地的 `@oclif/core`，将其放在 dependencies 并通过 lockfile 固定版本。
+
+生成命令后，例如 `oclif generate command greet`，可在 `src/commands/greet.ts` 编写：
+
+```ts
+import { Args, Command, Flags } from "@oclif/core";
+
+export default class Greet extends Command {
+    static description = "输出问候语";
+    static args = { name: Args.string({ required: true }) };
+    static flags = { upper: Flags.boolean({ description: "使用大写输出" }) };
+
+    async run(): Promise<void> {
+        const { args, flags } = await this.parse(Greet);
+        const message = `Hello, ${args.name}!`;
+        this.log(flags.upper ? message.toUpperCase() : message);
+    }
+}
+```
+
+使用生成的入口运行（Windows 可使用对应的 `.cmd` 入口）：
+
+```sh
+node bin/dev.js greet Alice --upper
+node bin/dev.js greet --help
+npm run build
+node bin/run.js greet Alice
+```
+
+要在本机通过命令名直接调用自己构建的 CLI，可在项目根目录构建后执行：
+
+```sh
+npm run build
+npm link
+mycli greet Alice --upper
+```
+
+`mycli` 是生成时选择并在 `package.json` 的 `bin` 中配置的命令名，应替换为实际名称。`npm link` 将当前项目链接到本机全局环境，源码变更后按项目构建方式重新构建；这与全局安装 oclif 生成器是两件事。完成本地调试后可在项目目录执行 `npm unlink --global` 移除链接。向其他机器分发时，应发布或安装项目包，而不是依赖开发机上的链接。
+
+以上为生成项目的示例，构建脚本、命令发现路径及生产入口以项目实际配置为准。命令参数由 oclif 解析，业务配置仍按[配置规范](04-configuration.md)合并并校验；不要在参数或日志中暴露秘密。命令应等待异步操作完成，在 `finally` 中关闭自己创建的连接，失败时返回非零退出码；破坏性操作应明确目标并提供适当的确认机制。测试至少覆盖参数错误、成功和失败退出码，并对构建产物执行一次 smoke。
+
+具体参数、flags、帮助和插件能力参见 [Commands](https://oclif.io/docs/commands/)、[Arguments](https://oclif.io/docs/args/) 和 [Flags](https://oclif.io/docs/flags/)，使用与 lockfile 对应的版本。
+
 上一篇：[Vitest 测试](14-testing.md) | [返回总目录](../development-guide.md) | 下一篇：[裁剪与验收](16-adoption-acceptance.md)

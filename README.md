@@ -20,7 +20,7 @@
 - [Croner、性能与 Tinypool](docs/guide/12-performance-workers.md)
 - [TypeScript、Day.js 与全 ESM 规范](docs/guide/13-typescript-conventions.md)
 - [Vitest 单元、集成、E2E 与 Smoke](docs/guide/14-testing.md)
-- [tsx、Docker Compose 与交付](docs/guide/15-development-delivery.md)
+- [tsx、oclif、Docker Compose 与交付](docs/guide/15-development-delivery.md)
 - [新项目裁剪与验收](docs/guide/16-adoption-acceptance.md)
 - [官方资料与版本参考](docs/guide/17-references.md)
 
